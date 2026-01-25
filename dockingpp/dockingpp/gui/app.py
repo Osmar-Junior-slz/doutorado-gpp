@@ -15,6 +15,7 @@ import yaml
 
 from dockingpp.data.io import load_config
 from dockingpp.data.pdb_clean import clean_pdb_text
+from dockingpp.data.pdb_extract import extract_ligands
 from dockingpp.pipeline.run import Config, run_pipeline
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -605,6 +606,17 @@ def compute_pdb_counts(lines: list[str]) -> dict[str, int]:
     return {"total": total, "atom": n_atom, "hetatm": n_hetatm}
 
 
+def count_ligand_atoms(pdb_text: str) -> int:
+    """Count ATOM/HETATM lines for a ligand PDB snippet."""
+
+    count = 0
+    for line in pdb_text.splitlines():
+        record = line[:6].strip().upper()
+        if record in {"ATOM", "HETATM"}:
+            count += 1
+    return count
+
+
 def choose_directory_dialog() -> str | None:
     """Open a native directory chooser dialog when available."""
 
@@ -651,6 +663,83 @@ def render_pdb_prep() -> None:
 
     cleaned_text = st.session_state.get("prepared_pdb_text", "")
     cleaned_name = st.session_state.get("prepared_pdb_name", "cleaned.pdb")
+
+    st.subheader("Extração de ligantes")
+    include_waters = st.checkbox("Incluir águas na extração", value=False, key="pdb_extract_waters")
+    include_ions = st.checkbox("Incluir íons na extração", value=False, key="pdb_extract_ions")
+
+    if st.button("Detectar ligantes"):
+        if upload is None:
+            st.error("Envie um arquivo PDB para detectar ligantes.")
+        else:
+            pdb_text = upload.getvalue().decode("utf-8")
+            ligands = extract_ligands(
+                pdb_text,
+                include_waters=include_waters,
+                include_ions=include_ions,
+            )
+            st.session_state.pdb_extract_ligands = ligands
+            st.session_state.pdb_extract_files = {}
+
+    ligands: dict[str, str] = st.session_state.get("pdb_extract_ligands", {})
+    if ligands:
+        ligand_rows = [
+            {"Ligante": ligand_id, "Linhas": count_ligand_atoms(pdb_text)}
+            for ligand_id, pdb_text in ligands.items()
+        ]
+        st.table(ligand_rows)
+        selected_ligands = st.multiselect(
+            "Selecionar ligantes para extrair",
+            options=list(ligands.keys()),
+            default=list(ligands.keys()),
+            key="pdb_extract_selected",
+        )
+        if st.button("Extrair selecionados"):
+            if not output_dir.strip():
+                st.error("Informe uma pasta de saída.")
+            elif not selected_ligands:
+                st.info("Selecione ao menos um ligante para extrair.")
+            else:
+                output_path = Path(output_dir).expanduser()
+                try:
+                    output_path.mkdir(parents=True, exist_ok=True)
+                except PermissionError:
+                    st.error("Sem permissão para criar a pasta de saída.")
+                    return
+                except OSError as exc:
+                    st.error(f"Não foi possível criar a pasta de saída: {exc}")
+                    return
+                extracted_files: dict[str, Path] = {}
+                for ligand_id in selected_ligands:
+                    ligand_text = ligands.get(ligand_id)
+                    if not ligand_text:
+                        continue
+                    filename = f"ligand_{ligand_id}.pdb"
+                    file_path = output_path / filename
+                    try:
+                        file_path.write_text(ligand_text, encoding="utf-8")
+                    except OSError as exc:
+                        st.error(f"Erro ao salvar {filename}: {exc}")
+                        continue
+                    extracted_files[ligand_id] = file_path
+                st.session_state.pdb_extract_files = extracted_files
+                if extracted_files:
+                    st.success("Ligantes extraídos com sucesso.")
+    elif st.session_state.get("pdb_extract_ligands") is not None:
+        st.info("Nenhum ligante encontrado (HETATM) com os filtros atuais.")
+
+    extracted_files = st.session_state.get("pdb_extract_files", {})
+    if extracted_files:
+        st.write("Downloads")
+        for ligand_id, file_path in extracted_files.items():
+            ligand_text = ligands.get(ligand_id, "")
+            data = file_path.read_bytes() if file_path.exists() else ligand_text.encode("utf-8")
+            st.download_button(
+                f"Baixar {file_path.name}",
+                data=data,
+                file_name=file_path.name,
+                mime="chemical/x-pdb",
+            )
 
     if st.button("Limpar e salvar"):
         if upload is None:
