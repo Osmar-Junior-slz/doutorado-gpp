@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import tempfile
 import time
@@ -42,6 +43,8 @@ def init_state() -> None:
         st.session_state.prepared_pdb_text = ""
     if "prepared_pdb_name" not in st.session_state:
         st.session_state.prepared_pdb_name = ""
+    if "pdb_clean_outdir" not in st.session_state:
+        st.session_state.pdb_clean_outdir = "datasets/cleaned"
 
 
 def save_upload(upload: st.runtime.uploaded_file_manager.UploadedFile, dest_dir: Path) -> str:
@@ -602,6 +605,27 @@ def compute_pdb_counts(lines: list[str]) -> dict[str, int]:
     return {"total": total, "atom": n_atom, "hetatm": n_hetatm}
 
 
+def choose_directory_dialog() -> str | None:
+    """Open a native directory chooser dialog when available."""
+
+    if importlib.util.find_spec("tkinter") is None:
+        return None
+
+    import tkinter as tk
+    from tkinter import filedialog
+
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        directory = filedialog.askdirectory()
+        root.destroy()
+    except Exception:  # noqa: BLE001
+        return None
+
+    return directory or None
+
+
 def render_pdb_prep() -> None:
     """Render the PDB preparation screen."""
 
@@ -612,7 +636,14 @@ def render_pdb_prep() -> None:
     remove_hetatm = st.checkbox("Remover HETATM", value=True, key="pdb_remove_hetatm")
     remove_ions = st.checkbox("Remover íons", value=True, key="pdb_remove_ions")
     keep_list_raw = st.text_input("Manter resíduos HETATM (ex.: HEM,ZN)", value="", key="pdb_keep_list")
-    output_dir = st.text_input("Diretório de saída", value="datasets/cleaned", key="pdb_output_dir")
+    output_dir = st.text_input("Pasta de saída", value=st.session_state.pdb_clean_outdir, key="pdb_clean_outdir")
+    if st.button("Selecionar pasta..."):
+        selected_dir = choose_directory_dialog()
+        if selected_dir:
+            st.session_state.pdb_clean_outdir = selected_dir
+            output_dir = selected_dir
+        else:
+            st.info("Seleção por diálogo indisponível; digite o caminho manualmente.")
 
     cleaned_text = st.session_state.get("prepared_pdb_text", "")
     cleaned_name = st.session_state.get("prepared_pdb_name", "cleaned.pdb")
@@ -620,6 +651,9 @@ def render_pdb_prep() -> None:
     if st.button("Limpar e salvar"):
         if upload is None:
             st.error("Envie um arquivo PDB para continuar.")
+            return
+        if not output_dir.strip():
+            st.error("Informe uma pasta de saída.")
             return
         pdb_text = upload.getvalue().decode("utf-8")
         keep_set = parse_keep_list(keep_list_raw)
@@ -631,8 +665,15 @@ def render_pdb_prep() -> None:
             keep_het_resnames=keep_set or None,
         )
         output_path = Path(output_dir).expanduser()
-        output_path.mkdir(parents=True, exist_ok=True)
-        cleaned_name = f"{upload.name}.cleaned.pdb"
+        try:
+            output_path.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            st.error("Sem permissão para criar a pasta de saída.")
+            return
+        except OSError as exc:
+            st.error(f"Não foi possível criar a pasta de saída: {exc}")
+            return
+        cleaned_name = f"{Path(upload.name).stem}.cleaned.pdb"
         cleaned_file = output_path / cleaned_name
         cleaned_file.write_text(cleaned_text, encoding="utf-8")
 
@@ -643,12 +684,13 @@ def render_pdb_prep() -> None:
         removed = max(original_counts["total"] - cleaned_counts["total"], 0)
 
         st.success(f"Arquivo salvo em: {cleaned_file}")
+        st.write("Resumo da limpeza:")
         st.write(
             {
-                "n_lines_total": original_counts["total"],
-                "n_atom": original_counts["atom"],
-                "n_hetatm": original_counts["hetatm"],
-                "n_removed": removed,
+                "Linhas totais": original_counts["total"],
+                "ATOM": original_counts["atom"],
+                "HETATM": original_counts["hetatm"],
+                "Removidas": removed,
             }
         )
 
@@ -657,9 +699,10 @@ def render_pdb_prep() -> None:
         st.session_state.prepared_pdb_name = cleaned_name
 
     if cleaned_text:
+        download_path = Path(st.session_state.prepared_receptor_path)
         st.download_button(
             "Baixar PDB limpo",
-            data=cleaned_text,
+            data=download_path.read_bytes() if download_path.exists() else cleaned_text.encode("utf-8"),
             file_name=cleaned_name,
             mime="chemical/x-pdb",
         )
