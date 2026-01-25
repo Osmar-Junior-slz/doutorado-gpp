@@ -1,8 +1,11 @@
 seed: 7
 device: cpu
+generations: 5
+pop_size: 20
 topk: 5
-population_size: 20
 num_atoms: 10
+max_trans: 5.0
+max_rot_deg: 25.0
 sw_interval: 5
 sw_max_iter: 50
 sw_patience: 10
