@@ -51,7 +51,7 @@ class AppState:
     cfg_dict: dict[str, Any]
     config_overrides: dict[str, Any]
     last_out_dir: str | None
-    prepared_receptor_path: str | None
+    prepared_receptor_path: str
     prepared_pdb_text: str
     prepared_pdb_name: str
     pdb_prep_outdir: str
@@ -104,7 +104,7 @@ def get_state() -> AppState:
         cfg_dict=st.session_state.get(StateKeys.LOADED_CONFIG, {}),
         config_overrides=st.session_state.get(StateKeys.CONFIG_OVERRIDES, {}),
         last_out_dir=st.session_state.get(StateKeys.LAST_OUT_DIR) or None,
-        prepared_receptor_path=st.session_state.get(StateKeys.PREPARED_RECEPTOR_PATH) or None,
+        prepared_receptor_path=st.session_state.get(StateKeys.PREPARED_RECEPTOR_PATH, ""),
         prepared_pdb_text=st.session_state.get(StateKeys.PREPARED_PDB_TEXT, ""),
         prepared_pdb_name=st.session_state.get(StateKeys.PREPARED_PDB_NAME, ""),
         pdb_prep_outdir=st.session_state.get(StateKeys.PDB_CLEAN_OUTDIR, "datasets/cleaned"),
@@ -119,4 +119,3 @@ def set_state(**kwargs: Any) -> None:
 
     for key, value in kwargs.items():
         st.session_state[key] = value
-

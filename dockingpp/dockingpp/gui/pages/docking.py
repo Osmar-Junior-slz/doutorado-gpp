@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -42,7 +41,7 @@ class DockingPage(BasePage):
     def render(self, state: AppState) -> None:
         st.header("Execução de Docking")
 
-        prepared_path = state.prepared_receptor_path or ""
+        prepared_path = st.session_state.get(StateKeys.PREPARED_RECEPTOR_PATH, "")
         use_prepared = False
         if prepared_path:
             st.info(f"Receptor preparado disponível: {prepared_path}")
@@ -104,32 +103,40 @@ class DockingPage(BasePage):
         st.caption("A configuração pode ser ajustada na aba Configurações.")
 
         if st.button("Executar"):
-            if (receptor_upload is None and not use_prepared) or peptide_upload is None:
-                st.error("Envie os arquivos PDB de receptor e peptídeo antes de executar.")
-                return
             if config_choice == "Enviar YAML" and uploaded_config is None:
                 st.error("Envie um arquivo de configuração YAML ou selecione a configuração padrão.")
                 return
             if not out_dir.strip():
                 st.error("Informe um diretório de saída.")
                 return
-
-            out_path = Path(out_dir)
-            ensure_dir(out_path)
-            temp_dir = Path(tempfile.mkdtemp(dir=out_path, prefix="inputs_"))
-
             if use_prepared:
                 prepared_file = Path(prepared_path)
                 if not prepared_file.exists():
-                    st.error("O receptor preparado não está mais disponível. Faça o upload novamente.")
+                    st.error(
+                        "Arquivo do receptor preparado não foi encontrado no disco: "
+                        f"{prepared_file}. Gere novamente ou faça upload."
+                    )
                     return
+            else:
+                if receptor_upload is None:
+                    st.error("Envie os arquivos PDB de receptor e peptídeo antes de executar.")
+                    return
+            if peptide_upload is None:
+                st.error("Envie os arquivos PDB de receptor e peptídeo antes de executar.")
+                return
+
+            out_path = Path(out_dir)
+            ensure_dir(out_path)
+            inputs_dir = ensure_dir(out_path / "inputs")
+
+            if use_prepared:
                 receptor_path = str(prepared_file)
             else:
-                receptor_path = str(save_uploaded_file(receptor_upload, temp_dir))
-            peptide_path = str(save_uploaded_file(peptide_upload, temp_dir))
+                receptor_path = str(save_uploaded_file(receptor_upload, inputs_dir, filename_hint="receptor.pdb"))
+            peptide_path = str(save_uploaded_file(peptide_upload, inputs_dir, filename_hint="peptide.pdb"))
 
             if config_choice == "Enviar YAML" and uploaded_config is not None:
-                config_path = save_uploaded_file(uploaded_config, temp_dir)
+                config_path = save_uploaded_file(uploaded_config, inputs_dir)
                 raw_cfg = load_config(str(config_path))
             else:
                 raw_cfg = load_config(str(DEFAULT_CONFIG_PATH))
