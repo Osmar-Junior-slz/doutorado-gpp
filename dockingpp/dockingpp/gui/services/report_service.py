@@ -52,23 +52,41 @@ def summarize_metrics(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
     return summary
 
 
-def metrics_series(records: list[dict[str, Any]], keys: list[str]) -> tuple[list[dict[str, Any]], str | None]:
+def metrics_series(
+    records: list[dict[str, Any]],
+    keys: list[str],
+    step_keys: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], str | None]:
     """Build a series for charting from metrics records."""
 
+    if not records:
+        return [], None
+    if step_keys is None:
+        step_keys = ["generation", "gen", "step", "iter"]
+
     selected_key = next((key for key in keys if any(rec.get("name") == key for rec in records)), None)
+    series: list[dict[str, Any]] = []
+    if selected_key:
+        for idx, record in enumerate(records):
+            if record.get("name") != selected_key:
+                continue
+            step = next((record.get(key) for key in step_keys if record.get(key) is not None), None)
+            if step is None:
+                step = idx
+            series.append({"step": step, "score": record.get("value")})
+        return series, selected_key
+
+    selected_key = next((key for key in keys if any(key in rec for rec in records)), None)
     if not selected_key:
         return [], None
 
-    series: list[dict[str, Any]] = []
     for idx, record in enumerate(records):
-        if record.get("name") != selected_key:
+        if selected_key not in record:
             continue
-        step = record.get("step")
-        if step is None:
-            step = record.get("generation")
+        step = next((record.get(key) for key in step_keys if record.get(key) is not None), None)
         if step is None:
             step = idx
-        series.append({"step": step, "score": record.get("value")})
+        series.append({"step": step, "score": record.get(selected_key)})
     return series, selected_key
 
 
@@ -93,4 +111,3 @@ def build_compare_table(report_data: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     return rows
-
