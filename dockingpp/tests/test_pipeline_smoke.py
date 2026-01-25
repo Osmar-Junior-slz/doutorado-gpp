@@ -28,3 +28,26 @@ def test_pipeline_smoke(tmp_path):
         repeat_payload = json.load(handle)
     assert repeat_payload["best_score_cheap"] == payload["best_score_cheap"]
     assert result_repeat.best_pose.score_cheap == result.best_pose.score_cheap
+
+
+def test_pipeline_pocket_reduction(tmp_path):
+    cfg_data = load_config("configs/default.yaml")
+    cfg = Config(**cfg_data)
+    cfg.full_search = False
+    cfg.top_pockets = 1
+    out_dir = tmp_path / "out_reduced"
+
+    run_pipeline(cfg, "__dummy__", "__dummy__", str(out_dir))
+
+    metrics = []
+    with open(out_dir / "metrics.jsonl", "r", encoding="utf-8") as handle:
+        for line in handle:
+            metrics.append(json.loads(line))
+
+    metric_map = {entry["name"]: entry["value"] for entry in metrics}
+    total_pockets = int(metric_map.get("n_pockets_total", 0))
+    used_pockets = int(metric_map.get("n_pockets_used", 0))
+    reduction_ratio = float(metric_map.get("reduction_ratio", 0.0))
+
+    assert used_pockets < total_pockets
+    assert reduction_ratio > 0

@@ -10,6 +10,8 @@ sw_interval: 5
 sw_max_iter: 50
 sw_patience: 10
 top_frac_sw: 0.2
+top_pockets: 3
+full_search: true
 
 cheap_weights:
   w_contacts: 1.0
