@@ -11,7 +11,10 @@ import numpy as np
 
 
 def _get_ckdtree() -> Optional[Type[Any]]:
-    spec = importlib.util.find_spec("scipy.spatial")
+    try:
+        spec = importlib.util.find_spec("scipy.spatial")
+    except ModuleNotFoundError:
+        return None
     if spec is None:
         return None
     module = importlib.import_module("scipy.spatial")

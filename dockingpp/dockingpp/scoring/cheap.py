@@ -7,25 +7,40 @@ from typing import Dict
 import numpy as np
 
 from dockingpp.data.structs import Pocket, Pose
-from dockingpp.utils.geometry import pairwise_dist
+from dockingpp.utils.kdtree import build_kdtree, query_radius
 
 
 def score_pose_cheap(pose: Pose, pocket: Pocket, weights: Dict[str, float]) -> float:
-    """Compute a simple cheap score for a pose."""
+    """Compute a heuristic geometric score (not a physical energy model)."""
 
-    coords = pose.coords
-    center = pocket.center.reshape(1, 3)
-    dists = pairwise_dist(coords, center).flatten()
+    pose_coords = np.asarray(pose.coords, dtype=float)
+    pocket_coords = pocket.meta.get("coords")
+    if pocket_coords is None:
+        pocket_coords = pocket.meta.get("atoms")
+    if pocket_coords is None:
+        pocket_coords = pocket.center.reshape(1, 3)
+    pocket_coords = np.asarray(pocket_coords, dtype=float)
 
-    contact_thresh = pocket.radius
-    clash_thresh = max(0.5, pocket.radius * 0.3)
+    if pose_coords.size == 0 or pocket_coords.size == 0:
+        return 0.0
 
-    contacts = float(np.sum(dists <= contact_thresh))
-    clashes = float(np.sum(dists <= clash_thresh))
-    geom_penalty = float(np.mean(dists))
+    clash_thresh = 2.0
+    contact_thresh = 6.0
 
-    w_contacts = weights.get("w_contacts", 1.0)
-    w_clashes = weights.get("w_clashes", 1.0)
-    w_geom = weights.get("w_geom", 0.1)
+    tree = build_kdtree(pocket_coords)
+    neighbors = query_radius(tree, pose_coords, contact_thresh)
 
-    return w_contacts * contacts - w_clashes * clashes - w_geom * geom_penalty
+    contacts = 0.0
+    clashes = 0.0
+    for pose_idx, pocket_idxs in enumerate(neighbors):
+        if pocket_idxs.size == 0:
+            continue
+        deltas = pocket_coords[pocket_idxs] - pose_coords[pose_idx]
+        dists = np.linalg.norm(deltas, axis=1)
+        clashes += float(np.sum(dists < clash_thresh))
+        contacts += float(np.sum((dists >= clash_thresh) & (dists <= contact_thresh)))
+
+    w_contact = weights.get("w_contact", 1.0)
+    w_clash = weights.get("w_clash", 1.0)
+
+    return w_contact * contacts - w_clash * clashes
