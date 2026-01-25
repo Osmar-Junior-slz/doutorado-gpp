@@ -1,0 +1,7 @@
+numpy
+pydantic
+pyyaml
+tqdm
+
+[scipy]
+scipy

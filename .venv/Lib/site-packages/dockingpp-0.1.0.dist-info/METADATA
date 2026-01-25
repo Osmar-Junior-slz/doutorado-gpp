@@ -1,0 +1,16 @@
+Metadata-Version: 2.4
+Name: dockingpp
+Version: 0.1.0
+Summary: Docking pipeline skeleton.
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: numpy
+Requires-Dist: pydantic
+Requires-Dist: pyyaml
+Requires-Dist: tqdm
+Provides-Extra: scipy
+Requires-Dist: scipy; extra == "scipy"
+
+# dockingpp
+
+Skeleton project for peptide docking experiments.

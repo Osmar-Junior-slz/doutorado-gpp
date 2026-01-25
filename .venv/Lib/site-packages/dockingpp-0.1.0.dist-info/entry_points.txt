@@ -1,0 +1,2 @@
+[console_scripts]
+dockingpp = dockingpp.cli:main
