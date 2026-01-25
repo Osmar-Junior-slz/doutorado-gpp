@@ -62,9 +62,9 @@ def _dummy_inputs() -> tuple[Any, Any, list[Pocket]]:
         dtype=float,
     )
     pockets = [
-        Pocket(center=np.array([0.0, 0.0, 0.0]), radius=5.0),
-        Pocket(center=np.array([10.0, 0.0, 0.0]), radius=5.0),
-        Pocket(center=np.array([0.0, 10.0, 0.0]), radius=5.0),
+        Pocket(id="dummy-0", center=np.array([0.0, 0.0, 0.0]), radius=5.0, coords=receptor_coords),
+        Pocket(id="dummy-1", center=np.array([10.0, 0.0, 0.0]), radius=5.0, coords=receptor_coords),
+        Pocket(id="dummy-2", center=np.array([0.0, 10.0, 0.0]), radius=5.0, coords=receptor_coords),
     ]
     receptor = {"dummy": True, "coords": receptor_coords}
     return receptor, {"dummy": True}, pockets
@@ -79,7 +79,11 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
     else:
         receptor = load_receptor(receptor_path)
         peptide = load_peptide(peptide_path)
-        pockets = load_pockets(receptor)
+        pockets = load_pockets(
+            receptor,
+            cfg=cfg,
+            pockets_path=getattr(cfg, "pockets_path", None),
+        )
 
     logger = RunLogger()
     total_pockets = len(pockets)

@@ -17,6 +17,8 @@ def score_pose_cheap(pose: Pose, pocket: Pocket, weights: Dict[str, float]) -> f
     pocket_coords = pocket.meta.get("coords")
     if pocket_coords is None:
         pocket_coords = pocket.meta.get("atoms")
+    if pocket_coords is None and getattr(pocket, "coords", None) is not None:
+        pocket_coords = pocket.coords
     if pocket_coords is None:
         pocket_coords = pocket.center.reshape(1, 3)
     pocket_coords = np.asarray(pocket_coords, dtype=float)

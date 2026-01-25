@@ -1,6 +1,6 @@
 import json
 
-from dockingpp.data.io import load_config
+from dockingpp.data.io import load_config, load_peptide, load_pockets, load_receptor
 from dockingpp.pipeline.run import Config, run_pipeline
 from dockingpp.data.structs import RunResult
 
@@ -51,3 +51,14 @@ def test_pipeline_pocket_reduction(tmp_path):
 
     assert used_pockets < total_pockets
     assert reduction_ratio > 0
+
+
+def test_load_pockets_dummy_global():
+    receptor = load_receptor("__dummy__")
+    peptide = load_peptide("__dummy__")
+
+    pockets = load_pockets(receptor)
+
+    assert peptide.get("dummy") is True
+    assert len(pockets) >= 1
+    assert pockets[0].id == "global"
