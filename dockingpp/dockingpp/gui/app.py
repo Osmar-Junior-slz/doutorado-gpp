@@ -85,8 +85,8 @@ def render_home() -> None:
     """Render the landing screen."""
 
     st.title("Docking Reduce")
-    st.subheader("Protein–peptide blind docking — experimental GUI")
-    if st.button("New Docking Experiment"):
+    st.subheader("Docking cego proteína–peptídeo — interface experimental")
+    if st.button("Novo experimento"):
         st.session_state.screen = "experiment"
         st.rerun()
 
@@ -98,7 +98,7 @@ def build_config_path(
 ) -> Path:
     """Resolve configuration path based on UI selection."""
 
-    if selection == "Upload YAML" and uploaded_config is not None:
+    if selection == "Enviar YAML" and uploaded_config is not None:
         return Path(save_upload(uploaded_config, temp_dir))
     return DEFAULT_CONFIG_PATH
 
@@ -106,44 +106,44 @@ def build_config_path(
 def render_experiment() -> None:
     """Render the experiment screen."""
 
-    st.header("Docking Experiment")
-    if st.button("Back to Home"):
+    st.header("Experimento de Docking")
+    if st.button("Voltar ao Início"):
         st.session_state.screen = "home"
         st.rerun()
 
     receptor_upload = st.file_uploader("Receptor (.pdb)", type=["pdb"])
-    peptide_upload = st.file_uploader("Peptide (.pdb)", type=["pdb"])
+    peptide_upload = st.file_uploader("Peptídeo (.pdb)", type=["pdb"])
 
-    out_dir = st.text_input("Output directory", value=st.session_state.default_out_dir, key="out_dir")
+    out_dir = st.text_input("Diretório de saída", value=st.session_state.default_out_dir, key="out_dir")
 
-    st.subheader("Experiment Mode")
+    st.subheader("Modo de experimento")
     mode = st.radio(
-        "Select mode",
-        options=["Single Run", "Compare (Full vs Reduced)"],
+        "Selecione o modo",
+        options=["Execução única", "Comparar (Completo vs Reduzido)"],
         index=0,
     )
     top_pockets_value = None
-    if mode == "Compare (Full vs Reduced)":
-        top_pockets_value = st.slider("Top pockets (reduced run)", min_value=1, max_value=20, value=5)
+    if mode == "Comparar (Completo vs Reduzido)":
+        top_pockets_value = st.slider("Melhores bolsões (execução reduzida)", min_value=1, max_value=20, value=5)
 
     config_choice = st.radio(
-        "Configuration",
-        options=["Default (configs/default.yaml)", "Upload YAML"],
+        "Configuração",
+        options=["Padrão (configs/default.yaml)", "Enviar YAML"],
         index=0,
     )
     uploaded_config = None
-    if config_choice == "Upload YAML":
-        uploaded_config = st.file_uploader("Config YAML", type=["yaml", "yml"])
+    if config_choice == "Enviar YAML":
+        uploaded_config = st.file_uploader("Configuração YAML", type=["yaml", "yml"])
 
-    if st.button("Run"):
+    if st.button("Executar"):
         if receptor_upload is None or peptide_upload is None:
-            st.error("Please upload receptor and peptide PDB files before running.")
+            st.error("Envie os arquivos PDB de receptor e peptídeo antes de executar.")
             return
-        if config_choice == "Upload YAML" and uploaded_config is None:
-            st.error("Please upload a YAML configuration file or select the default config.")
+        if config_choice == "Enviar YAML" and uploaded_config is None:
+            st.error("Envie um arquivo de configuração YAML ou selecione a configuração padrão.")
             return
         if not out_dir.strip():
-            st.error("Please provide an output directory.")
+            st.error("Informe um diretório de saída.")
             return
 
         out_path = Path(out_dir)
@@ -154,8 +154,8 @@ def render_experiment() -> None:
         peptide_path = save_upload(peptide_upload, temp_dir)
         config_path = build_config_path(config_choice, uploaded_config, temp_dir)
 
-        if mode == "Single Run":
-            st.write("Running docking pipeline...")
+        if mode == "Execução única":
+            st.write("Executando pipeline de docking...")
             try:
                 raw_cfg = load_config(str(config_path))
                 cfg = Config(**raw_cfg)
@@ -164,26 +164,26 @@ def render_experiment() -> None:
                 st.exception(exc)
                 return
 
-            st.success("Docking run finished.")
+            st.success("Execução de docking concluída.")
             best_score = result.best_pose.score_cheap
             if best_score is not None:
-                st.metric("best_score_cheap", best_score)
+                st.metric("Melhor score (cheap)", best_score)
 
             metrics_path = out_path / "metrics.jsonl"
             metrics = parse_metrics(metrics_path)
             if "n_eval" in metrics:
-                st.metric("n_eval", metrics["n_eval"])
+                st.metric("Avaliações", metrics["n_eval"])
             if "n_pockets_total" in metrics or "n_pockets_used" in metrics:
                 total = metrics.get("n_pockets_total", "-")
                 used = metrics.get("n_pockets_used", "-")
-                st.write(f"n_pockets_total / n_pockets_used: {total} / {used}")
+                st.write(f"Bolsões totais / bolsões usados: {total} / {used}")
 
             series = parse_metrics_series(metrics_path)
             if series:
                 st.line_chart(series, x="step", y="score")
 
             result_path = out_path / "result.json"
-            st.write("Artifacts")
+            st.write("Artefatos")
             st.code(f"{result_path}")
             st.code(f"{metrics_path}")
         else:
@@ -203,7 +203,7 @@ def render_experiment() -> None:
                 },
             ]
             results: dict[str, dict[str, Any]] = {}
-            st.write("Running docking pipeline (compare mode)...")
+            st.write("Executando pipeline de docking (modo de comparação)...")
             for run in runs:
                 run_out_dir = run["out_dir"]
                 run_out_dir.mkdir(parents=True, exist_ok=True)
@@ -233,19 +233,20 @@ def render_experiment() -> None:
                     "elapsed_seconds": elapsed,
                 }
 
-            st.success("Compare run finished.")
+            st.success("Execução de comparação concluída.")
             rows = []
             for label in ("full", "reduced"):
                 metrics = results[label]["metrics"]
+                label_name = "Completo" if label == "full" else "Reduzido"
                 rows.append(
                     {
-                        "mode": label,
-                        "best_score_cheap": results[label]["best_score_cheap"],
-                        "n_eval": metrics.get("n_eval"),
-                        "n_pockets_total": metrics.get("n_pockets_total"),
-                        "n_pockets_used": metrics.get("n_pockets_used"),
-                        "reduction_ratio": metrics.get("reduction_ratio"),
-                        "elapsed_seconds": results[label]["elapsed_seconds"],
+                        "Modo": label_name,
+                        "Melhor score (cheap)": results[label]["best_score_cheap"],
+                        "Avaliações": metrics.get("n_eval"),
+                        "Bolsões totais": metrics.get("n_pockets_total"),
+                        "Bolsões usados": metrics.get("n_pockets_used"),
+                        "Razão de redução": metrics.get("reduction_ratio"),
+                        "Tempo (s)": results[label]["elapsed_seconds"],
                     }
                 )
             st.table(rows)
@@ -254,7 +255,8 @@ def render_experiment() -> None:
                 metrics_path = Path(results[label]["out_dir"]) / "metrics.jsonl"
                 series = parse_metrics_series(metrics_path)
                 if series:
-                    st.subheader(f"{label} run metrics")
+                    label_name = "Completo" if label == "full" else "Reduzido"
+                    st.subheader(f"Métricas da execução {label_name.lower()}")
                     st.line_chart(series, x="step", y="score")
 
             report = {
@@ -268,12 +270,12 @@ def render_experiment() -> None:
             report_path = out_path / "report.json"
             report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
-            st.write("Artifacts")
+            st.write("Artefatos")
             st.code(str(Path(results["full"]["out_dir"]) / "result.json"))
             st.code(str(Path(results["reduced"]["out_dir"]) / "result.json"))
             st.code(str(report_path))
             st.download_button(
-                "Download report.json",
+                "Baixar report.json",
                 data=report_path.read_text(encoding="utf-8"),
                 file_name="report.json",
                 mime="application/json",
