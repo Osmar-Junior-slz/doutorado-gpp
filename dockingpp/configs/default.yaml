@@ -1,0 +1,17 @@
+seed: 7
+device: cpu
+topk: 5
+population_size: 20
+num_atoms: 10
+sw_interval: 5
+sw_max_iter: 50
+sw_patience: 10
+top_frac_sw: 0.2
+
+cheap_weights:
+  w_contacts: 1.0
+  w_clashes: 1.5
+  w_geom: 0.1
+
+expensive_every: 0
+expensive_topk: 2
