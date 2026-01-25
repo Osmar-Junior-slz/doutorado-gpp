@@ -24,9 +24,12 @@ class Config(BaseModel):
 
     seed: int = 7
     device: str = "cpu"
+    generations: int = 5
+    pop_size: int = 20
     topk: int = 5
-    population_size: int = 20
     num_atoms: int = 10
+    max_trans: float = 5.0
+    max_rot_deg: float = 25.0
     sw_interval: int = 5
     sw_max_iter: int = 50
     sw_patience: int = 10
@@ -77,9 +80,17 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
     result_path = os.path.join(out_dir, "result.json")
     with open(result_path, "w", encoding="utf-8") as handle:
         payload = {
-            "score_cheap": result.best_pose.score_cheap,
-            "score_expensive": result.best_pose.score_expensive,
-            "meta": result.best_pose.meta,
+            "best_score_cheap": result.best_pose.score_cheap,
+            "best_score_expensive": result.best_pose.score_expensive,
+            "generation": result.best_pose.meta.get("generation"),
+            "config": {
+                "seed": cfg.seed,
+                "generations": cfg.generations,
+                "pop_size": cfg.pop_size,
+                "topk": cfg.topk,
+                "max_trans": cfg.max_trans,
+                "max_rot_deg": cfg.max_rot_deg,
+            },
         }
         handle.write(json.dumps(payload, indent=2))
 

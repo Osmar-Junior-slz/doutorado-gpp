@@ -43,4 +43,6 @@ def score_pose_cheap(pose: Pose, pocket: Pocket, weights: Dict[str, float]) -> f
     w_contact = weights.get("w_contact", 1.0)
     w_clash = weights.get("w_clash", 1.0)
 
+    pose.meta["contacts"] = contacts
+    pose.meta["clashes"] = clashes
     return w_contact * contacts - w_clash * clashes
