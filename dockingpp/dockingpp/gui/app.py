@@ -636,12 +636,16 @@ def render_pdb_prep() -> None:
     remove_hetatm = st.checkbox("Remover HETATM", value=True, key="pdb_remove_hetatm")
     remove_ions = st.checkbox("Remover íons", value=True, key="pdb_remove_ions")
     keep_list_raw = st.text_input("Manter resíduos HETATM (ex.: HEM,ZN)", value="", key="pdb_keep_list")
+    if "pdb_clean_outdir" not in st.session_state:
+        st.session_state["pdb_clean_outdir"] = "datasets/cleaned"
+    if st.session_state.get("pdb_clean_outdir_selected"):
+        st.session_state["pdb_clean_outdir"] = st.session_state.pop("pdb_clean_outdir_selected")
     output_dir = st.text_input("Pasta de saída", value=st.session_state.pdb_clean_outdir, key="pdb_clean_outdir")
     if st.button("Selecionar pasta..."):
         selected_dir = choose_directory_dialog()
         if selected_dir:
-            st.session_state.pdb_clean_outdir = selected_dir
-            output_dir = selected_dir
+            st.session_state["pdb_clean_outdir_selected"] = selected_dir
+            st.rerun()
         else:
             st.info("Seleção por diálogo indisponível; digite o caminho manualmente.")
 
