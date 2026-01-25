@@ -12,6 +12,9 @@ sw_patience: 10
 top_frac_sw: 0.2
 top_pockets: 3
 full_search: true
+pockets_path: null
+pocket_mode: "global"
+pocket_margin: 2.0
 
 cheap_weights:
   w_contacts: 1.0

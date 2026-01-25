@@ -12,8 +12,10 @@ import numpy as np
 class Pocket:
     """Binding pocket representation."""
 
+    id: str
     center: np.ndarray
     radius: float
+    coords: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), dtype=float))
     meta: Dict[str, Any] = field(default_factory=dict)
 
 
