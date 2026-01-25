@@ -13,6 +13,7 @@ import streamlit as st
 import yaml
 
 from dockingpp.data.io import load_config
+from dockingpp.data.pdb_clean import clean_pdb_text
 from dockingpp.pipeline.run import Config, run_pipeline
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -35,6 +36,12 @@ def init_state() -> None:
         st.session_state.config_overrides = {}
     if "last_out_dir" not in st.session_state:
         st.session_state.last_out_dir = ""
+    if "prepared_receptor_path" not in st.session_state:
+        st.session_state.prepared_receptor_path = ""
+    if "prepared_pdb_text" not in st.session_state:
+        st.session_state.prepared_pdb_text = ""
+    if "prepared_pdb_name" not in st.session_state:
+        st.session_state.prepared_pdb_name = ""
 
 
 def save_upload(upload: st.runtime.uploaded_file_manager.UploadedFile, dest_dir: Path) -> str:
@@ -131,6 +138,12 @@ def render_docking() -> None:
 
     st.header("Execução de Docking")
 
+    prepared_path = st.session_state.get("prepared_receptor_path", "")
+    use_prepared = False
+    if prepared_path:
+        st.info(f"Receptor preparado disponível: {prepared_path}")
+        use_prepared = st.checkbox("Usar receptor preparado", value=True, key="use_prepared_receptor")
+
     receptor_upload = st.file_uploader("Receptor (.pdb)", type=["pdb"], key="receptor_upload")
     peptide_upload = st.file_uploader("Peptídeo (.pdb)", type=["pdb"], key="peptide_upload")
 
@@ -178,7 +191,7 @@ def render_docking() -> None:
     st.caption("A configuração pode ser ajustada na aba Configurações.")
 
     if st.button("Executar"):
-        if receptor_upload is None or peptide_upload is None:
+        if (receptor_upload is None and not use_prepared) or peptide_upload is None:
             st.error("Envie os arquivos PDB de receptor e peptídeo antes de executar.")
             return
         if config_choice == "Enviar YAML" and uploaded_config is None:
@@ -192,7 +205,14 @@ def render_docking() -> None:
         out_path.mkdir(parents=True, exist_ok=True)
         temp_dir = Path(tempfile.mkdtemp(dir=out_path, prefix="inputs_"))
 
-        receptor_path = save_upload(receptor_upload, temp_dir)
+        if use_prepared:
+            prepared_file = Path(prepared_path)
+            if not prepared_file.exists():
+                st.error("O receptor preparado não está mais disponível. Faça o upload novamente.")
+                return
+            receptor_path = str(prepared_file)
+        else:
+            receptor_path = save_upload(receptor_upload, temp_dir)
         peptide_path = save_upload(peptide_upload, temp_dir)
 
         if config_choice == "Enviar YAML" and uploaded_config is not None:
@@ -565,6 +585,90 @@ def render_reports() -> None:
         )
 
 
+def parse_keep_list(value: str) -> set[str]:
+    return {item.strip().upper() for item in value.split(",") if item.strip()}
+
+
+def compute_pdb_counts(lines: list[str]) -> dict[str, int]:
+    total = len(lines)
+    n_atom = 0
+    n_hetatm = 0
+    for line in lines:
+        record = line[:6].strip().upper()
+        if record == "ATOM":
+            n_atom += 1
+        elif record == "HETATM":
+            n_hetatm += 1
+    return {"total": total, "atom": n_atom, "hetatm": n_hetatm}
+
+
+def render_pdb_prep() -> None:
+    """Render the PDB preparation screen."""
+
+    st.header("Preparação PDB")
+    upload = st.file_uploader("Arquivo PDB", type=["pdb"], key="pdb_prep_upload")
+
+    remove_waters = st.checkbox("Remover águas", value=True, key="pdb_remove_waters")
+    remove_hetatm = st.checkbox("Remover HETATM", value=True, key="pdb_remove_hetatm")
+    remove_ions = st.checkbox("Remover íons", value=True, key="pdb_remove_ions")
+    keep_list_raw = st.text_input("Manter resíduos HETATM (ex.: HEM,ZN)", value="", key="pdb_keep_list")
+    output_dir = st.text_input("Diretório de saída", value="datasets/cleaned", key="pdb_output_dir")
+
+    cleaned_text = st.session_state.get("prepared_pdb_text", "")
+    cleaned_name = st.session_state.get("prepared_pdb_name", "cleaned.pdb")
+
+    if st.button("Limpar e salvar"):
+        if upload is None:
+            st.error("Envie um arquivo PDB para continuar.")
+            return
+        pdb_text = upload.getvalue().decode("utf-8")
+        keep_set = parse_keep_list(keep_list_raw)
+        cleaned_text = clean_pdb_text(
+            pdb_text,
+            remove_waters=remove_waters,
+            remove_hetatm=remove_hetatm,
+            remove_ions=remove_ions,
+            keep_het_resnames=keep_set or None,
+        )
+        output_path = Path(output_dir).expanduser()
+        output_path.mkdir(parents=True, exist_ok=True)
+        cleaned_name = f"{upload.name}.cleaned.pdb"
+        cleaned_file = output_path / cleaned_name
+        cleaned_file.write_text(cleaned_text, encoding="utf-8")
+
+        original_lines = [line.rstrip("\n") for line in pdb_text.splitlines()]
+        cleaned_lines = [line.rstrip("\n") for line in cleaned_text.splitlines()]
+        original_counts = compute_pdb_counts(original_lines)
+        cleaned_counts = compute_pdb_counts(cleaned_lines)
+        removed = max(original_counts["total"] - cleaned_counts["total"], 0)
+
+        st.success(f"Arquivo salvo em: {cleaned_file}")
+        st.write(
+            {
+                "n_lines_total": original_counts["total"],
+                "n_atom": original_counts["atom"],
+                "n_hetatm": original_counts["hetatm"],
+                "n_removed": removed,
+            }
+        )
+
+        st.session_state.prepared_receptor_path = str(cleaned_file)
+        st.session_state.prepared_pdb_text = cleaned_text
+        st.session_state.prepared_pdb_name = cleaned_name
+
+    if cleaned_text:
+        st.download_button(
+            "Baixar PDB limpo",
+            data=cleaned_text,
+            file_name=cleaned_name,
+            mime="chemical/x-pdb",
+        )
+        if st.button("Usar este receptor no Docking"):
+            st.success("Receptor preparado selecionado para o Docking.")
+            st.session_state.page = "Docking"
+            st.rerun()
+
+
 def main() -> None:
     """Main entrypoint for Streamlit."""
 
@@ -572,7 +676,7 @@ def main() -> None:
     init_state()
 
     st.sidebar.title("Docking Reduce")
-    pages = ["Início", "Docking", "Configurações", "Relatórios"]
+    pages = ["Início", "Docking", "Preparação PDB", "Configurações", "Relatórios"]
     current_page = st.session_state.page if st.session_state.page in pages else "Início"
     selection = st.sidebar.radio("Menu", options=pages, index=pages.index(current_page))
     if selection != st.session_state.page:
@@ -582,6 +686,8 @@ def main() -> None:
         render_home()
     elif st.session_state.page == "Docking":
         render_docking()
+    elif st.session_state.page == "Preparação PDB":
+        render_pdb_prep()
     elif st.session_state.page == "Configurações":
         render_config()
     else:
