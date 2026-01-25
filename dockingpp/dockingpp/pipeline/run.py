@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from dockingpp.data.io import load_peptide, load_pockets, load_receptor
 from dockingpp.data.structs import Pocket, RunResult
 from dockingpp.pipeline.logging import RunLogger
-from dockingpp.priors.pocket import PriorNetPocket
+from dockingpp.priors.pocket import PriorNetPocket, rank_pockets
 from dockingpp.priors.pose import PriorNetPose
 from dockingpp.scoring.cheap import score_pose_cheap
 from dockingpp.scoring.expensive import score_pose_expensive
@@ -37,15 +37,37 @@ class Config(BaseModel):
     cheap_weights: Dict[str, float] = Field(default_factory=dict)
     expensive_every: int = 0
     expensive_topk: int = 0
+    top_pockets: int = 3
+    full_search: bool = True
 
     class Config:
         extra = "allow"
 
 
 def _dummy_inputs() -> tuple[Any, Any, list[Pocket]]:
-    center = np.zeros(3, dtype=float)
-    pocket = Pocket(center=center, radius=5.0)
-    return {"dummy": True}, {"dummy": True}, [pocket]
+    receptor_coords = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+            [5.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [0.0, 3.0, 0.0],
+            [0.0, 4.0, 0.0],
+            [0.0, 5.0, 0.0],
+        ],
+        dtype=float,
+    )
+    pockets = [
+        Pocket(center=np.array([0.0, 0.0, 0.0]), radius=5.0),
+        Pocket(center=np.array([10.0, 0.0, 0.0]), radius=5.0),
+        Pocket(center=np.array([0.0, 10.0, 0.0]), radius=5.0),
+    ]
+    receptor = {"dummy": True, "coords": receptor_coords}
+    return receptor, {"dummy": True}, pockets
 
 
 def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: str) -> RunResult:
@@ -60,6 +82,16 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
         pockets = load_pockets(receptor)
 
     logger = RunLogger()
+    total_pockets = len(pockets)
+    if not getattr(cfg, "full_search", True):
+        ranked = rank_pockets(receptor, pockets, peptide=peptide)
+        top_pockets = int(getattr(cfg, "top_pockets", len(ranked)) or 0)
+        if top_pockets > 0:
+            pockets = [pocket for pocket, _ in ranked[:top_pockets]]
+    selected_pockets = len(pockets)
+    logger.log_metric("total_pockets", float(total_pockets), step=0)
+    logger.log_metric("selected_pockets", float(selected_pockets), step=0)
+    logger.log_global_metrics(total_pockets, selected_pockets)
     search = ABCGAVGOSSearch(cfg)
     prior_pocket = PriorNetPocket()
     prior_pose = PriorNetPose()

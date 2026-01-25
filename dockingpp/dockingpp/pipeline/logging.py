@@ -21,6 +21,16 @@ class RunLogger:
             payload.update(extra)
         self.records.append(payload)
 
+    def log_global_metrics(self, total_pockets: int, used_pockets: int) -> None:
+        """Store global metrics about pocket selection."""
+
+        reduction_ratio = 0.0
+        if total_pockets > 0:
+            reduction_ratio = max(0.0, 1.0 - (used_pockets / total_pockets))
+        self.log_metric("n_pockets_total", float(total_pockets), step=0)
+        self.log_metric("n_pockets_used", float(used_pockets), step=0)
+        self.log_metric("reduction_ratio", float(reduction_ratio), step=0)
+
     def flush(self, out_dir: str) -> None:
         """Write metrics to disk."""
 
