@@ -311,7 +311,10 @@ class ReportsPage(BasePage):
 
     def render(self, state: AppState) -> None:
         st.header("Relatórios")
-        st.session_state.setdefault(StateKeys.REPORTS_ROOT, state.reports_root)
+        if st.session_state.get(StateKeys.REPORTS_ROOT_PENDING):
+            st.session_state[StateKeys.REPORTS_ROOT] = st.session_state.pop(StateKeys.REPORTS_ROOT_PENDING)
+        if StateKeys.REPORTS_ROOT not in st.session_state:
+            st.session_state[StateKeys.REPORTS_ROOT] = "runs"
 
         source = st.radio(
             "Fonte do relatório",
@@ -337,9 +340,9 @@ class ReportsPage(BasePage):
             folder_path = st.text_input("Pasta do relatório", key=StateKeys.REPORTS_ROOT)
             if st.button("Selecionar pasta..."):
                 chosen = choose_directory()
-                if chosen:
-                    st.session_state[StateKeys.REPORTS_ROOT] = chosen
-                    folder_path = chosen
+                if chosen is not None:
+                    st.session_state[StateKeys.REPORTS_ROOT_PENDING] = chosen
+                    st.rerun()
             if not folder_path:
                 st.info("Informe uma pasta com arquivos JSON para continuar.")
                 return
