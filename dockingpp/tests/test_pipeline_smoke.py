@@ -17,7 +17,9 @@ def test_pipeline_smoke(tmp_path):
     assert isinstance(result, RunResult)
     assert (out_dir / "result.json").exists()
     assert (out_dir / "metrics.jsonl").exists()
+    assert (out_dir / "metrics.timeseries.jsonl").exists()
     assert (out_dir_repeat / "metrics.jsonl").exists()
+    assert (out_dir_repeat / "metrics.timeseries.jsonl").exists()
 
     with open(out_dir / "result.json", "r", encoding="utf-8") as handle:
         payload = json.load(handle)
@@ -43,6 +45,8 @@ def test_pipeline_pocket_reduction(tmp_path):
     with open(out_dir / "metrics.jsonl", "r", encoding="utf-8") as handle:
         for line in handle:
             metrics.append(json.loads(line))
+
+    assert (out_dir / "metrics.timeseries.jsonl").exists()
 
     metric_map = {entry["name"]: entry["value"] for entry in metrics}
     total_pockets = int(metric_map.get("n_pockets_total", 0))

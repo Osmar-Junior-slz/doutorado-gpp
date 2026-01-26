@@ -38,3 +38,25 @@ class RunLogger:
         with open(path, "w", encoding="utf-8") as handle:
             for record in self.records:
                 handle.write(json.dumps(record) + "\n")
+
+    def flush_timeseries(self, out_dir: str, mode: str | None = None) -> None:
+        """Write per-step metrics to disk."""
+
+        steps: Dict[int, Dict[str, Any]] = {}
+        for record in self.records:
+            step = record.get("step")
+            name = record.get("name")
+            value = record.get("value")
+            if step is None or name is None:
+                continue
+            entry = steps.setdefault(int(step), {"step": int(step)})
+            entry[name] = value
+
+        if mode:
+            for entry in steps.values():
+                entry["mode"] = mode
+
+        path = f"{out_dir}/metrics.timeseries.jsonl"
+        with open(path, "w", encoding="utf-8") as handle:
+            for step in sorted(steps):
+                handle.write(json.dumps(steps[step]) + "\n")
