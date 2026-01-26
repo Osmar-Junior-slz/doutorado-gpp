@@ -22,7 +22,13 @@ class RunLogger:
         self.records.append(payload)
 
     def log_global_metrics(self, total_pockets: int, used_pockets: int) -> None:
-        """Store global metrics about pocket selection."""
+        """Store global metrics about pocket selection.
+
+        PT-BR: "n_pockets_total" é o total detectado, "n_pockets_used" é o
+        conjunto realmente explorado. O "reduction_ratio" mede a fração de
+        redução do espaço de busca (1 - used/total), devendo ser > 0 quando
+        total > used.
+        """
 
         reduction_ratio = 0.0
         if total_pockets > 0:
