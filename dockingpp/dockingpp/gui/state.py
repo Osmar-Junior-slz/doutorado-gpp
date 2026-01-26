@@ -30,6 +30,7 @@ class StateKeys:
     PDB_EXTRACT_LIGANDS = "pdb_extract_ligands"
     PDB_EXTRACT_FILES = "pdb_extract_files"
     REPORTS_ROOT = "reports_root"
+    REPORTS_ROOT_PENDING = "reports_root_pending"
     REPORT_RUNS = "report_runs"
     OUT_DIR = "out_dir"
     CONFIG_CHOICE = "config_choice"
