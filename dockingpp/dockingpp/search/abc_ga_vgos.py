@@ -1,4 +1,11 @@
-"""Minimal implementation of an ABC GA + VGOS-inspired search."""
+"""Minimal implementation of an ABC GA + VGOS-inspired search.
+
+Nota (PT-BR): o comportamento anterior alternava pockets a cada geração e
+misturava a população entre eles. Isso introduzia um "sawtooth" artificial
+na convergência e mascarava a diferença entre modo full e reduced. A correção
+abaixo executa o otimizador por pocket (sequencialmente), mantendo estado
+isolado por pocket e tornando as métricas interpretáveis.
+"""
 
 from __future__ import annotations
 
@@ -48,25 +55,25 @@ class ABCGAVGOSSearch(SearchEngine):
             dtype=float,
         )
 
-    def search(
+    def _search_single_pocket(
         self,
+        pocket: Any,
+        rng: np.random.Generator,
+        base_coords: np.ndarray,
+        cfg: Any,
         receptor: Any,
         peptide: Any,
-        pockets: list[Any],
-        cfg: Any,
         score_cheap_fn: Callable[..., float],
         score_expensive_fn: Callable[..., float],
-        prior_pocket: Any,
-        prior_pose: Any,
         logger: Any,
-    ) -> RunResult:
-        """Run a minimal search loop."""
+        step_offset: int,
+    ) -> tuple[Pose, Population]:
+        """Executa a busca dentro de um único pocket.
 
-        _ = (prior_pocket, prior_pose)
-        rng = np.random.default_rng(cfg.seed)
-        if not pockets:
-            raise ValueError("No pockets available for search.")
-        base_coords = self._get_base_coords(peptide, cfg, rng)
+        PT-BR: esta função garante que cada pocket tenha sua própria população
+        e RNG, evitando a alternância não controlada que causava o sawtooth.
+        """
+
         generations = int(getattr(cfg, "generations", 1) or 1)
         pop_size = int(getattr(cfg, "pop_size", getattr(cfg, "population_size", 20)) or 20)
         topk = max(1, int(getattr(cfg, "topk", 1) or 1))
@@ -86,7 +93,6 @@ class ABCGAVGOSSearch(SearchEngine):
         population = Population(poses=poses, generation=0)
 
         for generation in range(generations):
-            pocket = pockets[generation % len(pockets)]
             if generation > 0:
                 mutation_trans = max_trans * 0.2
                 mutation_rot_deg = max_rot_deg * 0.2
@@ -121,12 +127,70 @@ class ABCGAVGOSSearch(SearchEngine):
             if gen_best_score > best_score:
                 best_score = gen_best_score
                 best_pose = gen_best
-                best_generation = generation
+                best_generation = step_offset + generation
+                best_pose.meta["pocket_id"] = getattr(pocket, "id", None)
 
-            logger.log_metric("best_score", float(gen_best_score), step=generation)
-            logger.log_metric("mean_score", float(np.mean(scores)), step=generation)
-            logger.log_metric("n_eval", float(len(poses)), step=generation)
-            logger.log_metric("n_clashes", float(n_clashes), step=generation)
+            step = step_offset + generation
+            logger.log_metric("best_score", float(gen_best_score), step=step)
+            logger.log_metric("mean_score", float(np.mean(scores)), step=step)
+            logger.log_metric("n_eval", float(len(poses)), step=step)
+            logger.log_metric("n_clashes", float(n_clashes), step=step)
 
         best_pose.meta["generation"] = best_generation
-        return RunResult(best_pose=best_pose, population=population, metrics={})
+        return best_pose, population
+
+    def search(
+        self,
+        receptor: Any,
+        peptide: Any,
+        pockets: list[Any],
+        cfg: Any,
+        score_cheap_fn: Callable[..., float],
+        score_expensive_fn: Callable[..., float],
+        prior_pocket: Any,
+        prior_pose: Any,
+        logger: Any,
+    ) -> RunResult:
+        """Run a minimal search loop."""
+
+        _ = (prior_pocket, prior_pose)
+        if not pockets:
+            raise ValueError("No pockets available for search.")
+        seed_seq = np.random.SeedSequence(cfg.seed)
+        child_seqs = seed_seq.spawn(len(pockets) + 1)
+        base_rng = np.random.default_rng(child_seqs[0])
+        base_coords = self._get_base_coords(peptide, cfg, base_rng)
+
+        # PT-BR: estratégia escolhida = otimizar por pocket de forma sequencial.
+        # Isso evita o sawtooth (alternância de pocket sem estado isolado) e
+        # torna a redução (full vs reduced) proporcional ao número de pockets.
+        best_pose: Pose | None = None
+        best_score = float("-inf")
+        last_population: Population | None = None
+        generations = int(getattr(cfg, "generations", 1) or 1)
+
+        for pocket_idx, pocket in enumerate(pockets):
+            rng = np.random.default_rng(child_seqs[pocket_idx + 1])
+            step_offset = pocket_idx * generations
+            pocket_best, population = self._search_single_pocket(
+                pocket=pocket,
+                rng=rng,
+                base_coords=base_coords,
+                cfg=cfg,
+                receptor=receptor,
+                peptide=peptide,
+                score_cheap_fn=score_cheap_fn,
+                score_expensive_fn=score_expensive_fn,
+                logger=logger,
+                step_offset=step_offset,
+            )
+            last_population = population
+            pocket_score = pocket_best.score_cheap or 0.0
+            if pocket_score > best_score or best_pose is None:
+                best_score = pocket_score
+                best_pose = pocket_best
+
+        if best_pose is None or last_population is None:
+            raise ValueError("No pockets available for search.")
+        best_pose.meta.setdefault("generation", 0)
+        return RunResult(best_pose=best_pose, population=last_population, metrics={})

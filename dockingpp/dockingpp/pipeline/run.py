@@ -88,6 +88,9 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
     logger = RunLogger()
     total_pockets = len(pockets)
     if not getattr(cfg, "full_search", True):
+        # PT-BR: o erro anterior ocorria quando o "reduced" ainda varria todos
+        # os pockets na busca. Aqui limitamos explicitamente aos top_pockets,
+        # garantindo que o espaço de busca seja reduzido de fato.
         ranked = rank_pockets(receptor, pockets, peptide=peptide)
         top_pockets = int(getattr(cfg, "top_pockets", len(ranked)) or 0)
         if top_pockets <= 0:
@@ -96,6 +99,10 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
             pockets = [pocket for pocket, _ in ranked[:top_pockets]]
         else:
             pockets = [pocket for pocket, _ in ranked]
+
+    # PT-BR: métricas globais de seleção. "n_pockets_total" é o total detectado,
+    # "n_pockets_used" é quantos realmente foram passados para a busca, e
+    # "reduction_ratio" = 1 - used/total (deve ser > 0 no modo reduced).
     selected_pockets = len(pockets)
     logger.log_metric("total_pockets", float(total_pockets), step=0)
     logger.log_metric("selected_pockets", float(selected_pockets), step=0)
