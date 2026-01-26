@@ -90,8 +90,12 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
     if not getattr(cfg, "full_search", True):
         ranked = rank_pockets(receptor, pockets, peptide=peptide)
         top_pockets = int(getattr(cfg, "top_pockets", len(ranked)) or 0)
-        if top_pockets > 0:
+        if top_pockets <= 0:
+            pockets = []
+        elif total_pockets > top_pockets:
             pockets = [pocket for pocket, _ in ranked[:top_pockets]]
+        else:
+            pockets = [pocket for pocket, _ in ranked]
     selected_pockets = len(pockets)
     logger.log_metric("total_pockets", float(total_pockets), step=0)
     logger.log_metric("selected_pockets", float(selected_pockets), step=0)

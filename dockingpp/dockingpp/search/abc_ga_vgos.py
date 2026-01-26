@@ -64,7 +64,8 @@ class ABCGAVGOSSearch(SearchEngine):
 
         _ = (prior_pocket, prior_pose)
         rng = np.random.default_rng(cfg.seed)
-        pocket = pockets[0]
+        if not pockets:
+            raise ValueError("No pockets available for search.")
         base_coords = self._get_base_coords(peptide, cfg, rng)
         generations = int(getattr(cfg, "generations", 1) or 1)
         pop_size = int(getattr(cfg, "pop_size", getattr(cfg, "population_size", 20)) or 20)
@@ -85,6 +86,7 @@ class ABCGAVGOSSearch(SearchEngine):
         population = Population(poses=poses, generation=0)
 
         for generation in range(generations):
+            pocket = pockets[generation % len(pockets)]
             if generation > 0:
                 mutation_trans = max_trans * 0.2
                 mutation_rot_deg = max_rot_deg * 0.2
