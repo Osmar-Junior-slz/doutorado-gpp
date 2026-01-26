@@ -131,4 +131,6 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
         handle.write(json.dumps(payload, indent=2))
 
     logger.flush(out_dir)
+    mode_label = "full" if getattr(cfg, "full_search", True) else "reduced"
+    logger.flush_timeseries(out_dir, mode=mode_label)
     return result
