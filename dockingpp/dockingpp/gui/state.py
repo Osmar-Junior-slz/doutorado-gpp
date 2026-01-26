@@ -33,6 +33,7 @@ class StateKeys:
     REPORTS_ROOT_PENDING = "reports_root_pending"
     REPORT_RUNS = "report_runs"
     OUT_DIR = "out_dir"
+    RECENT_OUT_DIRS = "recent_out_dirs"
     CONFIG_CHOICE = "config_choice"
     CONFIG_UPLOAD = "config_upload"
     RUN_MODE = "run_mode"
@@ -91,6 +92,8 @@ def init_state_defaults() -> None:
         st.session_state[StateKeys.REPORT_RUNS] = []
     if StateKeys.OUT_DIR not in st.session_state:
         st.session_state[StateKeys.OUT_DIR] = st.session_state[StateKeys.DEFAULT_OUT_DIR]
+    if StateKeys.RECENT_OUT_DIRS not in st.session_state:
+        st.session_state[StateKeys.RECENT_OUT_DIRS] = [st.session_state[StateKeys.DEFAULT_OUT_DIR]]
 
 
 def get_state() -> AppState:
