@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,67 @@ def apply_overrides(raw_cfg: dict[str, Any], overrides: dict[str, Any]) -> dict[
     return resolved
 
 
+def normalize_out_dir(path: str) -> str:
+    if not path:
+        return ""
+    return str(Path(path).expanduser().resolve(strict=False))
+
+
+def can_browse_for_directory() -> bool:
+    try:
+        import tkinter  # noqa: F401
+        from tkinter import filedialog  # noqa: F401
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
+def browse_for_directory() -> str | None:
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.wm_attributes("-topmost", 1)
+        folder = filedialog.askdirectory()
+        root.destroy()
+    except Exception:  # noqa: BLE001
+        return None
+    return folder or None
+
+
+def update_recent_out_dirs(selected: str, max_items: int = 8) -> None:
+    if not selected:
+        return
+    normalized = normalize_out_dir(selected)
+    recent = st.session_state.get(StateKeys.RECENT_OUT_DIRS, [])
+    if not isinstance(recent, list):
+        recent = []
+    new_recent = [normalized] + [path for path in recent if path != normalized]
+    st.session_state[StateKeys.RECENT_OUT_DIRS] = new_recent[:max_items]
+
+
+def validate_out_dir(out_dir: str) -> tuple[bool, Path | None, str | None]:
+    if not out_dir or not out_dir.strip():
+        return False, None, "Informe um diretório de saída."
+    normalized = normalize_out_dir(out_dir)
+    out_path = Path(normalized)
+    try:
+        out_path.mkdir(parents=True, exist_ok=True)
+    except Exception:  # noqa: BLE001
+        return False, None, "Não foi possível criar o diretório de saída."
+    try:
+        with tempfile.NamedTemporaryFile(dir=out_path, prefix=".write_test_", delete=True) as handle:
+            handle.write(b"ok")
+            handle.flush()
+    except Exception:  # noqa: BLE001
+        return False, None, "Diretório de saída não é gravável."
+    return True, out_path, None
+
+
 class DockingPage(BasePage):
     id = "Docking"
     title = "Docking"
@@ -51,7 +113,76 @@ class DockingPage(BasePage):
         peptide_upload = st.file_uploader("Peptídeo (.pdb)", type=["pdb"], key="peptide_upload")
 
         st.session_state.setdefault(StateKeys.OUT_DIR, state.default_out_dir)
-        out_dir = st.text_input("Diretório de saída", value=st.session_state[StateKeys.OUT_DIR], key=StateKeys.OUT_DIR)
+        st.session_state.setdefault(StateKeys.RECENT_OUT_DIRS, [state.default_out_dir])
+        st.session_state[StateKeys.OUT_DIR] = normalize_out_dir(st.session_state[StateKeys.OUT_DIR])
+
+        recent_key = "out_dir_recent"
+        recent_dirs = st.session_state.get(StateKeys.RECENT_OUT_DIRS, [])
+        if not isinstance(recent_dirs, list):
+            recent_dirs = []
+        current_dir = normalize_out_dir(st.session_state[StateKeys.OUT_DIR])
+        default_dir = normalize_out_dir(state.default_out_dir)
+        recent_options: list[str] = []
+        for candidate in [current_dir, default_dir, *recent_dirs]:
+            normalized = normalize_out_dir(candidate)
+            if normalized and normalized not in recent_options:
+                recent_options.append(normalized)
+        if not recent_options:
+            recent_options.append(default_dir or current_dir or "runs")
+
+        if recent_key not in st.session_state:
+            st.session_state[recent_key] = current_dir or recent_options[0]
+
+        def sync_out_dir_from_recent() -> None:
+            selected = st.session_state.get(recent_key, "")
+            if selected:
+                st.session_state[StateKeys.OUT_DIR] = selected
+
+        def sync_out_dir_from_text() -> None:
+            current_value = st.session_state.get(StateKeys.OUT_DIR, "")
+            if current_value:
+                st.session_state[StateKeys.OUT_DIR] = normalize_out_dir(current_value)
+
+        def sync_out_dir_from_browse() -> None:
+            selected = browse_for_directory()
+            if selected:
+                normalized = normalize_out_dir(selected)
+                st.session_state[StateKeys.OUT_DIR] = normalized
+                st.session_state[recent_key] = normalized
+
+        st.subheader("Diretório de saída")
+        can_browse = can_browse_for_directory()
+        col_main, col_action = st.columns([3, 1])
+        with col_main:
+            selected_index = (
+                recent_options.index(st.session_state[recent_key])
+                if st.session_state.get(recent_key) in recent_options
+                else 0
+            )
+            st.selectbox(
+                "Diretórios recentes",
+                options=recent_options,
+                index=selected_index,
+                key=recent_key,
+                on_change=sync_out_dir_from_recent,
+            )
+        with col_action:
+            if can_browse:
+                st.button("Procurar...", on_click=sync_out_dir_from_browse)
+            else:
+                st.button("Procurar...", disabled=True)
+
+        if not can_browse:
+            st.warning(
+                "Seleção de pastas indisponível neste ambiente. Use os diretórios recentes ou informe o caminho manualmente."
+            )
+
+        out_dir = st.text_input(
+            "Diretório de saída",
+            value=st.session_state[StateKeys.OUT_DIR],
+            key=StateKeys.OUT_DIR,
+            on_change=sync_out_dir_from_text,
+        )
 
         st.subheader("Modo de experimento")
         mode = st.radio(
@@ -106,8 +237,9 @@ class DockingPage(BasePage):
             if config_choice == "Enviar YAML" and uploaded_config is None:
                 st.error("Envie um arquivo de configuração YAML ou selecione a configuração padrão.")
                 return
-            if not out_dir.strip():
-                st.error("Informe um diretório de saída.")
+            valid_out_dir, out_path, error_message = validate_out_dir(out_dir)
+            if not valid_out_dir or out_path is None:
+                st.error(error_message or "Informe um diretório de saída válido.")
                 return
             if use_prepared:
                 prepared_file = Path(prepared_path)
@@ -125,7 +257,6 @@ class DockingPage(BasePage):
                 st.error("Envie os arquivos PDB de receptor e peptídeo antes de executar.")
                 return
 
-            out_path = Path(out_dir)
             ensure_dir(out_path)
             inputs_dir = ensure_dir(out_path / "inputs")
 
@@ -156,6 +287,7 @@ class DockingPage(BasePage):
 
                 write_resolved_config(out_path, resolved_cfg)
                 set_state(**{StateKeys.LAST_OUT_DIR: str(out_path)})
+                update_recent_out_dirs(str(out_path))
 
                 st.success("Execução de docking concluída.")
                 metrics_path = out_path / "metrics.jsonl"
@@ -232,6 +364,7 @@ class DockingPage(BasePage):
 
             st.success("Execução de comparação concluída.")
             set_state(**{StateKeys.LAST_OUT_DIR: str(out_path)})
+            update_recent_out_dirs(str(out_path))
 
             rows = []
             for label in ("full", "reduced"):
