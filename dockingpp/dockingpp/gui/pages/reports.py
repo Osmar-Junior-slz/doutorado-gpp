@@ -1,4 +1,4 @@
-"""Reports page."""
+"""Página de relatórios para visualização de métricas e resultados."""
 
 from __future__ import annotations
 
@@ -25,34 +25,46 @@ from dockingpp.gui.ui.components import download_json_button
 
 
 class ReportsPage(BasePage):
+    """Página de relatórios com gráficos de convergência e comparações."""
+
     id = "Relatórios"
     title = "Relatórios"
 
     @staticmethod
     def _is_monotonic(values: list[float]) -> bool:
+        """Verifica se a sequência é monotônica não decrescente."""
+
         return all(values[idx] <= values[idx + 1] for idx in range(len(values) - 1))
 
     @staticmethod
     def _series_values(series: list[dict[str, float]]) -> list[float]:
+        """Extrai os valores numéricos da série, ignorando ausências."""
+
         return [float(item["score"]) for item in series if item.get("score") is not None]
 
     @staticmethod
     def _prepare_series(series: list[dict[str, float]]) -> list[dict[str, float]]:
+        """Ordena a série pelo step para garantir plotagem consistente."""
+
         return sorted(series, key=lambda item: item.get("step", 0))
 
     @staticmethod
     def _compute_evals_cumulative(series: list[dict[str, float]]) -> list[dict[str, float]]:
+        """Calcula avaliações acumuladas, preservando séries já cumulativas."""
+
         ordered = ReportsPage._prepare_series(series)
         values = ReportsPage._series_values(ordered)
         if not values:
             return []
         if ReportsPage._is_monotonic(values):
+            # PT-BR: se já é cumulativo, mantemos para evitar dupla soma.
             return [{"step": item["step"], "score": float(item["score"])} for item in ordered]
         cumulative = []
         total = 0.0
         for item in ordered:
             value = float(item["score"])
             total += value
+            # PT-BR: somamos incrementalmente quando a série é incremental.
             cumulative.append({"step": item["step"], "score": total})
         return cumulative
 
@@ -61,6 +73,8 @@ class ReportsPage(BasePage):
         best_series: list[dict[str, float]],
         evals_cumulative: list[dict[str, float]],
     ) -> list[dict[str, float]]:
+        """Associa best score às avaliações acumuladas pelo mesmo step."""
+
         best_by_step = {
             item["step"]: float(item["score"]) for item in best_series if item.get("score") is not None
         }
@@ -68,6 +82,7 @@ class ReportsPage(BasePage):
         for item in evals_cumulative:
             step = item.get("step")
             if step in best_by_step and item.get("score") is not None:
+                # PT-BR: usamos avaliações no eixo X e best score no eixo Y.
                 paired.append({"step": float(item["score"]), "score": best_by_step[step]})
         return paired
 
@@ -81,6 +96,8 @@ class ReportsPage(BasePage):
         ylabel: str,
         label: str | None = None,
     ) -> plt.Figure:
+        """Plota uma linha simples a partir de uma lista de dicionários."""
+
         fig, ax = plt.subplots()
         xs = [item[x_key] for item in data]
         ys = [item[y_key] for item in data]
@@ -100,6 +117,8 @@ class ReportsPage(BasePage):
         xlabel: str,
         ylabel: str,
     ) -> plt.Figure:
+        """Plota múltiplas séries em um mesmo gráfico."""
+
         fig, ax = plt.subplots()
         for series, label in zip(series_list, labels, strict=False):
             xs = [item["step"] for item in series]
@@ -120,6 +139,8 @@ class ReportsPage(BasePage):
         xlabel: str,
         ylabel: str,
     ) -> plt.Figure:
+        """Plota pontos de comparação únicos com rótulos opcionais."""
+
         fig, ax = plt.subplots()
         for x_val, y_val, label in zip(xs, ys, labels, strict=False):
             ax.scatter([x_val], [y_val], label=label)
@@ -132,15 +153,21 @@ class ReportsPage(BasePage):
 
     @staticmethod
     def _download_csv_button(label: str, df: pd.DataFrame, filename: str) -> None:
+        """Gera um botão de download para CSV a partir de um DataFrame."""
+
         csv_data = df.to_csv(index=False).encode("utf-8")
         st.download_button(label, csv_data, file_name=filename, mime="text/csv")
 
     @staticmethod
     def _load_uploaded_json(uploaded_file: st.runtime.uploaded_file_manager.UploadedFile) -> dict[str, Any]:
+        """Carrega JSON enviado via upload na interface."""
+
         return json.loads(uploaded_file.getvalue().decode("utf-8"))
 
     @staticmethod
     def _load_uploaded_jsonl(uploaded_file: st.runtime.uploaded_file_manager.UploadedFile) -> list[dict[str, Any]]:
+        """Carrega JSONL enviado via upload na interface."""
+
         content = uploaded_file.getvalue().decode("utf-8").splitlines()
         records: list[dict[str, Any]] = []
         for line in content:
@@ -151,6 +178,8 @@ class ReportsPage(BasePage):
 
     @staticmethod
     def _download_json_payload(label: str, payload: dict[str, Any], filename: str) -> None:
+        """Gera um botão de download para JSON em memória."""
+
         st.download_button(
             label,
             json.dumps(payload, indent=2, ensure_ascii=False),
@@ -160,6 +189,8 @@ class ReportsPage(BasePage):
 
     @staticmethod
     def _download_jsonl_payload(label: str, records: list[dict[str, Any]], filename: str) -> None:
+        """Gera um botão de download para JSONL em memória."""
+
         content = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
         st.download_button(
             label,
@@ -170,10 +201,14 @@ class ReportsPage(BasePage):
 
     @staticmethod
     def _summary_value(data: dict[str, Any], keys: list[str]) -> Any:
+        """Seleciona o primeiro valor disponível dentre chaves candidatas."""
+
         return next((data.get(key) for key in keys if data.get(key) is not None), None)
 
     @staticmethod
     def _guess_metrics_index(options: list[str], tokens: list[str]) -> int:
+        """Sugere índice padrão para arquivos de métricas baseado em tokens."""
+
         for idx, name in enumerate(options, start=1):
             lowered = name.lower()
             if any(token in lowered for token in tokens):
@@ -185,6 +220,8 @@ class ReportsPage(BasePage):
         bundle: ReportBundle,
         metrics_records: list[dict[str, Any]] | None,
     ) -> None:
+        """Renderiza relatório de execução única com gráficos e resumos."""
+
         st.subheader("Resumo da execução")
         summary_rows = [
             {
@@ -214,7 +251,13 @@ class ReportsPage(BasePage):
             st.warning("Nenhum arquivo .jsonl selecionado para métricas. Selecione um para ver gráficos.")
             return
 
-        best_series, _ = metrics_series(metrics_records, ["best_score_cheap", "best_score", "best"])
+        # PT-BR: agregamos por step e aplicamos melhor-so-far para evitar serrilhado.
+        best_series, _ = metrics_series(
+            metrics_records,
+            ["best_score_cheap", "best_score", "best"],
+            aggregate="min",
+            cumulative_best=True,
+        )
         if best_series:
             best_series = self._prepare_series(best_series)
             fig = self._plot_line(
@@ -256,6 +299,8 @@ class ReportsPage(BasePage):
         metrics_full: list[dict[str, Any]] | None,
         metrics_reduced: list[dict[str, Any]] | None,
     ) -> None:
+        """Renderiza relatório comparativo entre modos completo e reduzido."""
+
         st.subheader("Comparação: Completo vs Reduzido")
         rows = build_compare_table(bundle.main_json)
         if rows:
@@ -273,8 +318,18 @@ class ReportsPage(BasePage):
             return
 
         st.subheader("Convergência (Full vs Reduced)")
-        full_best, _ = metrics_series(metrics_full, ["best_score_cheap", "best_score", "best"])
-        reduced_best, _ = metrics_series(metrics_reduced, ["best_score_cheap", "best_score", "best"])
+        full_best, _ = metrics_series(
+            metrics_full,
+            ["best_score_cheap", "best_score", "best"],
+            aggregate="min",
+            cumulative_best=True,
+        )
+        reduced_best, _ = metrics_series(
+            metrics_reduced,
+            ["best_score_cheap", "best_score", "best"],
+            aggregate="min",
+            cumulative_best=True,
+        )
         if full_best and reduced_best:
             full_best = self._prepare_series(full_best)
             reduced_best = self._prepare_series(reduced_best)
@@ -310,6 +365,8 @@ class ReportsPage(BasePage):
             st.warning("n_eval ou best score não disponíveis para comparação por avaliações.")
 
     def render(self, state: AppState) -> None:
+        """Renderiza a página completa de relatórios."""
+
         st.header("Relatórios")
         if st.session_state.get(StateKeys.REPORTS_ROOT_PENDING):
             st.session_state[StateKeys.REPORTS_ROOT] = st.session_state.pop(StateKeys.REPORTS_ROOT_PENDING)
