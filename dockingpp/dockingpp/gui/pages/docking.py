@@ -1,4 +1,4 @@
-"""Docking execution page."""
+"""Página de execução de docking com progresso e resultados."""
 
 from __future__ import annotations
 
@@ -16,33 +16,44 @@ from dockingpp.data.io import load_config
 from dockingpp.pipeline.run import Config, run_pipeline
 from dockingpp.gui.pages.base import BasePage
 from dockingpp.gui.services.io_service import ensure_dir, save_uploaded_file
+from dockingpp.gui.services.progress_service import compute_progress, format_progress_text, read_last_metrics_generation
 from dockingpp.gui.services.report_service import load_jsonl, metrics_series, summarize_metrics
 from dockingpp.gui.state import AppState, DEFAULT_CONFIG_PATH, StateKeys, set_state
 from dockingpp.gui.ui.components import download_json_button
 
 
 def write_resolved_config(out_dir: Path, cfg_dict: dict[str, Any]) -> None:
+    """Salva a configuração resolvida no diretório de saída."""
+
+    # PT-BR: garantimos o diretório antes de escrever a configuração final.
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "config.resolved.json"
     path.write_text(json.dumps(cfg_dict, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def apply_overrides(raw_cfg: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+    """Aplica sobreposições do usuário em uma cópia da configuração base."""
+
     resolved = dict(raw_cfg)
     for key, value in overrides.items():
         if value is None:
             continue
+        # PT-BR: apenas valores definidos sobrescrevem a configuração original.
         resolved[key] = value
     return resolved
 
 
 def normalize_out_dir(path: str) -> str:
+    """Normaliza o caminho de saída garantindo resolução consistente."""
+
     if not path:
         return ""
     return str(Path(path).expanduser().resolve(strict=False))
 
 
 def can_browse_for_directory() -> bool:
+    """Informa se a biblioteca Tkinter está disponível para seleção de pasta."""
+
     try:
         import tkinter  # noqa: F401
         from tkinter import filedialog  # noqa: F401
@@ -52,6 +63,8 @@ def can_browse_for_directory() -> bool:
 
 
 def browse_for_directory() -> str | None:
+    """Abre um seletor de diretório nativo quando o Tkinter está disponível."""
+
     try:
         import tkinter as tk
         from tkinter import filedialog
@@ -69,17 +82,22 @@ def browse_for_directory() -> str | None:
 
 
 def update_recent_out_dirs(selected: str, max_items: int = 8) -> None:
+    """Atualiza a lista de diretórios de saída recentes."""
+
     if not selected:
         return
     normalized = normalize_out_dir(selected)
     recent = st.session_state.get(StateKeys.RECENT_OUT_DIRS, [])
     if not isinstance(recent, list):
         recent = []
+    # PT-BR: movemos o diretório escolhido para o topo da lista.
     new_recent = [normalized] + [path for path in recent if path != normalized]
     st.session_state[StateKeys.RECENT_OUT_DIRS] = new_recent[:max_items]
 
 
 def validate_out_dir(out_dir: str) -> tuple[bool, Path | None, str | None]:
+    """Valida e cria o diretório de saída, retornando mensagem de erro se necessário."""
+
     if not out_dir or not out_dir.strip():
         return False, None, "Informe um diretório de saída."
     normalized = normalize_out_dir(out_dir)
@@ -97,68 +115,6 @@ def validate_out_dir(out_dir: str) -> tuple[bool, Path | None, str | None]:
     return True, out_path, None
 
 
-def read_last_metrics_generation(metrics_path: Path, max_bytes: int = 8192) -> int | None:
-    """Lê o metrics.jsonl incremental para recuperar a geração mais recente.
-
-    PT-BR: o bug "Geração 399 / 100" ocorria porque a UI usava o "step" global
-    (que inclui offsets por pocket ou avaliações internas). Agora priorizamos
-    o campo "generation" (0..N) gravado a cada geração, garantindo progresso
-    correto e sem extrapolar cfg.generations. O "step" segue existindo apenas
-    para séries temporais.
-    """
-
-    try:
-        if not metrics_path.exists():
-            return None
-        with metrics_path.open("rb") as handle:
-            try:
-                handle.seek(0, 2)
-                file_size = handle.tell()
-                read_size = min(file_size, max_bytes)
-                handle.seek(-read_size, 2)
-            except OSError:
-                handle.seek(0)
-            chunk = handle.read().decode("utf-8", errors="ignore")
-    except Exception:  # noqa: BLE001
-        return None
-
-    generations: list[int] = []
-    steps: list[int] = []
-    for line in chunk.splitlines():
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        generation = record.get("generation")
-        if isinstance(generation, (int, float)):
-            generations.append(int(generation))
-        step = record.get("step")
-        if isinstance(step, (int, float)):
-            steps.append(int(step))
-    # PT-BR: usamos a última geração encontrada; se não existir, caímos no step.
-    if generations:
-        return generations[-1]
-    return steps[-1] if steps else None
-
-
-def compute_progress(generation: int | None, total_generations: int) -> float:
-    if total_generations <= 0:
-        return 0.0
-    # PT-BR: clamp para evitar valores acima de N mesmo que existam outros contadores.
-    current = max(generation or 0, 0)
-    current = min(current, total_generations)
-    return min(current / total_generations, 1.0)
-
-
-def format_progress_text(generation: int | None, total_generations: int, progress: float) -> str:
-    # PT-BR: usamos a geração normalizada para garantir "Geração g / N" correto.
-    current = max(generation or 0, 0)
-    current = min(current, total_generations)
-    return f"Geração {current} / {total_generations} ({progress * 100:.1f}%)"
-
-
 def run_pipeline_with_progress(
     cfg: Config,
     receptor_path: str,
@@ -169,10 +125,14 @@ def run_pipeline_with_progress(
     progress_text: st.delta_generator.DeltaGenerator,
     poll_interval: float = 0.3,
 ) -> tuple[Any, float]:
+    """Executa o pipeline em thread paralela e atualiza o progresso da UI."""
+
     result_holder: dict[str, Any] = {}
     metrics_path = out_dir / "metrics.jsonl"
 
     def _run_pipeline() -> None:
+        """Executa o pipeline e captura erro/tempo para a UI."""
+
         try:
             start_time = time.perf_counter()
             result_holder["result"] = run_pipeline(cfg, receptor_path, peptide_path, str(out_dir))
@@ -207,10 +167,14 @@ def run_pipeline_with_progress(
 
 
 class DockingPage(BasePage):
+    """Página principal de execução do docking com controles de entrada."""
+
     id = "Docking"
     title = "Docking"
 
     def render(self, state: AppState) -> None:
+        """Renderiza a interface do usuário para execução do docking."""
+
         st.header("Execução de Docking")
 
         prepared_path = st.session_state.get(StateKeys.PREPARED_RECEPTOR_PATH, "")
@@ -244,16 +208,22 @@ class DockingPage(BasePage):
             st.session_state[recent_key] = current_dir or recent_options[0]
 
         def sync_out_dir_from_recent() -> None:
+            """Sincroniza o diretório selecionado na lista de recentes."""
+
             selected = st.session_state.get(recent_key, "")
             if selected:
                 st.session_state[StateKeys.OUT_DIR] = selected
 
         def sync_out_dir_from_text() -> None:
+            """Normaliza o diretório digitado manualmente pelo usuário."""
+
             current_value = st.session_state.get(StateKeys.OUT_DIR, "")
             if current_value:
                 st.session_state[StateKeys.OUT_DIR] = normalize_out_dir(current_value)
 
         def sync_out_dir_from_browse() -> None:
+            """Atualiza o diretório de saída após seleção no navegador de pastas."""
+
             selected = browse_for_directory()
             if selected:
                 normalized = normalize_out_dir(selected)
@@ -447,7 +417,13 @@ class DockingPage(BasePage):
                 metrics_path = out_path / "metrics.jsonl"
                 metrics_records = load_jsonl(metrics_path)
                 metrics = summarize_metrics(metrics_records)
-                series, _ = metrics_series(metrics_records, ["best_score_cheap", "best_score"])
+                # PT-BR: agregamos por step e aplicamos melhor-so-far para evitar serrilhado.
+                series, _ = metrics_series(
+                    metrics_records,
+                    ["best_score_cheap", "best_score"],
+                    aggregate="min",
+                    cumulative_best=True,
+                )
                 if series:
                     st.line_chart(series, x="step", y="score")
 
@@ -559,7 +535,13 @@ class DockingPage(BasePage):
 
             for label in ("full", "reduced"):
                 metrics_path = Path(results[label]["out_dir"]) / "metrics.jsonl"
-                series, _ = metrics_series(load_jsonl(metrics_path), ["best_score_cheap", "best_score"])
+                # PT-BR: agregamos por step e aplicamos melhor-so-far para evitar serrilhado.
+                series, _ = metrics_series(
+                    load_jsonl(metrics_path),
+                    ["best_score_cheap", "best_score"],
+                    aggregate="min",
+                    cumulative_best=True,
+                )
                 if series:
                     label_name = "Completo" if label == "full" else "Reduzido"
                     st.subheader(f"Métricas da execução {label_name.lower()}")
