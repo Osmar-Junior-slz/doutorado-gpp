@@ -1,4 +1,4 @@
-"""Logging utilities for dockingpp."""
+"""Utilitários de logging para o dockingpp."""
 
 from __future__ import annotations
 
@@ -9,17 +9,41 @@ from typing import Any, Dict, List, Optional
 
 @dataclass
 class RunLogger:
-    """In-memory logger that writes JSONL on flush."""
+    """Logger em memória com opção de escrita incremental no JSONL.
+
+    PT-BR: o problema do progresso "travado" acontecia porque o metrics.jsonl
+    era escrito apenas no final (flush), então a UI não tinha dados novos para
+    ler durante a execução. A correção habilita gravação incremental por métrica
+    quando live_write=True, mantendo o flush final para consistência.
+    """
 
     records: List[Dict[str, Any]] = field(default_factory=list)
+    out_dir: str | None = None
+    live_write: bool = False
 
     def log_metric(self, name: str, value: float, step: int, extra: Optional[Dict[str, Any]] = None) -> None:
-        """Store a metric record."""
+        """Registra uma métrica no buffer e, opcionalmente, no JSONL incremental.
+
+        PT-BR: "step" representa o índice global (ex.: pocket * gerações + geração)
+        usado para séries temporais. Para progresso correto, esperamos um campo
+        extra "generation" com a geração local [0..N], evitando valores > N na UI.
+        """
 
         payload = {"name": name, "value": value, "step": step}
         if extra:
             payload.update(extra)
         self.records.append(payload)
+        self._append_record(payload)
+
+    def _append_record(self, payload: Dict[str, Any]) -> None:
+        """Escreve o payload incrementalmente no metrics.jsonl (quando habilitado)."""
+
+        if not self.live_write or not self.out_dir:
+            return
+        # PT-BR: escrita incremental garante atualização em tempo real para a UI.
+        path = f"{self.out_dir}/metrics.jsonl"
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload) + "\n")
 
     def log_global_metrics(self, total_pockets: int, used_pockets: int) -> None:
         """Store global metrics about pocket selection.

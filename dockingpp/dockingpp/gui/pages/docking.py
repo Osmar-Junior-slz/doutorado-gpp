@@ -97,11 +97,14 @@ def validate_out_dir(out_dir: str) -> tuple[bool, Path | None, str | None]:
     return True, out_path, None
 
 
-def read_last_metrics_step(metrics_path: Path, max_bytes: int = 8192) -> int | None:
+def read_last_metrics_generation(metrics_path: Path, max_bytes: int = 8192) -> int | None:
     """Lê o metrics.jsonl incremental para recuperar a geração mais recente.
 
-    O pipeline grava uma linha JSON por geração com o campo "step"; usamos a última linha válida
-    (ou o maior step encontrado) para estimar o progresso enquanto a execução ainda está em curso.
+    PT-BR: o bug "Geração 399 / 100" ocorria porque a UI usava o "step" global
+    (que inclui offsets por pocket ou avaliações internas). Agora priorizamos
+    o campo "generation" (0..N) gravado a cada geração, garantindo progresso
+    correto e sem extrapolar cfg.generations. O "step" segue existindo apenas
+    para séries temporais.
     """
 
     try:
@@ -119,6 +122,7 @@ def read_last_metrics_step(metrics_path: Path, max_bytes: int = 8192) -> int | N
     except Exception:  # noqa: BLE001
         return None
 
+    generations: list[int] = []
     steps: list[int] = []
     for line in chunk.splitlines():
         if not line.strip():
@@ -127,21 +131,31 @@ def read_last_metrics_step(metrics_path: Path, max_bytes: int = 8192) -> int | N
             record = json.loads(line)
         except json.JSONDecodeError:
             continue
+        generation = record.get("generation")
+        if isinstance(generation, (int, float)):
+            generations.append(int(generation))
         step = record.get("step")
         if isinstance(step, (int, float)):
             steps.append(int(step))
-    return max(steps) if steps else None
+    # PT-BR: usamos a última geração encontrada; se não existir, caímos no step.
+    if generations:
+        return generations[-1]
+    return steps[-1] if steps else None
 
 
-def compute_progress(step: int | None, total_generations: int) -> float:
+def compute_progress(generation: int | None, total_generations: int) -> float:
     if total_generations <= 0:
         return 0.0
-    current = max(step or 0, 0)
+    # PT-BR: clamp para evitar valores acima de N mesmo que existam outros contadores.
+    current = max(generation or 0, 0)
+    current = min(current, total_generations)
     return min(current / total_generations, 1.0)
 
 
-def format_progress_text(step: int | None, total_generations: int, progress: float) -> str:
-    current = max(step or 0, 0)
+def format_progress_text(generation: int | None, total_generations: int, progress: float) -> str:
+    # PT-BR: usamos a geração normalizada para garantir "Geração g / N" correto.
+    current = max(generation or 0, 0)
+    current = min(current, total_generations)
     return f"Geração {current} / {total_generations} ({progress * 100:.1f}%)"
 
 
@@ -169,22 +183,23 @@ def run_pipeline_with_progress(
     thread = threading.Thread(target=_run_pipeline, daemon=True)
     thread.start()
 
-    last_step: int | None = None
+    last_generation: int | None = None
     while thread.is_alive():
-        last_step = read_last_metrics_step(metrics_path)
-        progress_value = compute_progress(last_step, total_generations)
+        last_generation = read_last_metrics_generation(metrics_path)
+        progress_value = compute_progress(last_generation, total_generations)
         progress_bar.progress(progress_value)
-        progress_text.write(format_progress_text(last_step, total_generations, progress_value))
+        progress_text.write(format_progress_text(last_generation, total_generations, progress_value))
         time.sleep(poll_interval)
 
     thread.join()
-    last_step = read_last_metrics_step(metrics_path) or last_step
-    progress_value = compute_progress(last_step, total_generations)
+    last_generation = read_last_metrics_generation(metrics_path) or last_generation
+    progress_value = compute_progress(last_generation, total_generations)
     if total_generations > 0 and progress_value < 1.0:
         progress_value = 1.0
-        last_step = total_generations
+        # PT-BR: garante fechamento em 100% mesmo se a última geração não foi lida.
+        last_generation = total_generations
     progress_bar.progress(progress_value)
-    progress_text.write(format_progress_text(last_step, total_generations, progress_value))
+    progress_text.write(format_progress_text(last_generation, total_generations, progress_value))
 
     if "error" in result_holder:
         raise result_holder["error"]
