@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -94,6 +95,100 @@ def validate_out_dir(out_dir: str) -> tuple[bool, Path | None, str | None]:
     except Exception:  # noqa: BLE001
         return False, None, "Diretório de saída não é gravável."
     return True, out_path, None
+
+
+def read_last_metrics_step(metrics_path: Path, max_bytes: int = 8192) -> int | None:
+    """Lê o metrics.jsonl incremental para recuperar a geração mais recente.
+
+    O pipeline grava uma linha JSON por geração com o campo "step"; usamos a última linha válida
+    (ou o maior step encontrado) para estimar o progresso enquanto a execução ainda está em curso.
+    """
+
+    try:
+        if not metrics_path.exists():
+            return None
+        with metrics_path.open("rb") as handle:
+            try:
+                handle.seek(0, 2)
+                file_size = handle.tell()
+                read_size = min(file_size, max_bytes)
+                handle.seek(-read_size, 2)
+            except OSError:
+                handle.seek(0)
+            chunk = handle.read().decode("utf-8", errors="ignore")
+    except Exception:  # noqa: BLE001
+        return None
+
+    steps: list[int] = []
+    for line in chunk.splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        step = record.get("step")
+        if isinstance(step, (int, float)):
+            steps.append(int(step))
+    return max(steps) if steps else None
+
+
+def compute_progress(step: int | None, total_generations: int) -> float:
+    if total_generations <= 0:
+        return 0.0
+    current = max(step or 0, 0)
+    return min(current / total_generations, 1.0)
+
+
+def format_progress_text(step: int | None, total_generations: int, progress: float) -> str:
+    current = max(step or 0, 0)
+    return f"Geração {current} / {total_generations} ({progress * 100:.1f}%)"
+
+
+def run_pipeline_with_progress(
+    cfg: Config,
+    receptor_path: str,
+    peptide_path: str,
+    out_dir: Path,
+    total_generations: int,
+    progress_bar: st.delta_generator.DeltaGenerator,
+    progress_text: st.delta_generator.DeltaGenerator,
+    poll_interval: float = 0.3,
+) -> tuple[Any, float]:
+    result_holder: dict[str, Any] = {}
+    metrics_path = out_dir / "metrics.jsonl"
+
+    def _run_pipeline() -> None:
+        try:
+            start_time = time.perf_counter()
+            result_holder["result"] = run_pipeline(cfg, receptor_path, peptide_path, str(out_dir))
+            result_holder["elapsed"] = time.perf_counter() - start_time
+        except Exception as exc:  # noqa: BLE001
+            result_holder["error"] = exc
+
+    thread = threading.Thread(target=_run_pipeline, daemon=True)
+    thread.start()
+
+    last_step: int | None = None
+    while thread.is_alive():
+        last_step = read_last_metrics_step(metrics_path)
+        progress_value = compute_progress(last_step, total_generations)
+        progress_bar.progress(progress_value)
+        progress_text.write(format_progress_text(last_step, total_generations, progress_value))
+        time.sleep(poll_interval)
+
+    thread.join()
+    last_step = read_last_metrics_step(metrics_path) or last_step
+    progress_value = compute_progress(last_step, total_generations)
+    if total_generations > 0 and progress_value < 1.0:
+        progress_value = 1.0
+        last_step = total_generations
+    progress_bar.progress(progress_value)
+    progress_text.write(format_progress_text(last_step, total_generations, progress_value))
+
+    if "error" in result_holder:
+        raise result_holder["error"]
+    return result_holder["result"], result_holder.get("elapsed", 0.0)
 
 
 class DockingPage(BasePage):
@@ -233,6 +328,41 @@ class DockingPage(BasePage):
 
         st.caption("A configuração pode ser ajustada na aba Configurações.")
 
+        st.subheader("Parâmetros de execução")
+        base_cfg = st.session_state.get(StateKeys.LOADED_CONFIG, {})
+        current_overrides = dict(st.session_state.get(StateKeys.CONFIG_OVERRIDES, {}))
+        resolved_preview = apply_overrides(base_cfg, current_overrides)
+        total_generations_preview = int(resolved_preview.get("generations", 0) or 0)
+        pop_size_preview = int(resolved_preview.get("pop_size", 0) or 0)
+
+        st.write(f"Total de gerações (configuração resolvida): {total_generations_preview}")
+        st.write(f"Tamanho da população (configuração resolvida): {pop_size_preview}")
+
+        st.session_state.setdefault(StateKeys.OVERRIDE_GENERATIONS, total_generations_preview or 1)
+        st.session_state.setdefault(StateKeys.OVERRIDE_POP_SIZE, pop_size_preview or 1)
+
+        col_gen, col_pop = st.columns(2)
+        with col_gen:
+            generations_value = st.number_input(
+                "Sobrescrever gerações",
+                min_value=1,
+                step=1,
+                value=int(st.session_state[StateKeys.OVERRIDE_GENERATIONS]),
+                key=StateKeys.OVERRIDE_GENERATIONS,
+            )
+        with col_pop:
+            pop_size_value = st.number_input(
+                "Sobrescrever pop_size",
+                min_value=1,
+                step=1,
+                value=int(st.session_state[StateKeys.OVERRIDE_POP_SIZE]),
+                key=StateKeys.OVERRIDE_POP_SIZE,
+            )
+
+        current_overrides["generations"] = int(generations_value)
+        current_overrides["pop_size"] = int(pop_size_value)
+        st.session_state[StateKeys.CONFIG_OVERRIDES] = current_overrides
+
         if st.button("Executar"):
             if config_choice == "Enviar YAML" and uploaded_config is None:
                 st.error("Envie um arquivo de configuração YAML ou selecione a configuração padrão.")
@@ -272,15 +402,24 @@ class DockingPage(BasePage):
             else:
                 raw_cfg = load_config(str(DEFAULT_CONFIG_PATH))
 
-            resolved_cfg = apply_overrides(raw_cfg, state.config_overrides)
+            resolved_cfg = apply_overrides(raw_cfg, st.session_state.get(StateKeys.CONFIG_OVERRIDES, {}))
+            total_generations = int(resolved_cfg.get("generations", 0) or 0)
 
             if mode == "Execução única":
                 st.write("Executando pipeline de docking...")
-                start_time = time.perf_counter()
+                progress_bar = st.progress(0.0)
+                progress_text = st.empty()
                 try:
                     cfg = Config(**resolved_cfg)
-                    result = run_pipeline(cfg, receptor_path, peptide_path, str(out_path))
-                    elapsed = time.perf_counter() - start_time
+                    result, elapsed = run_pipeline_with_progress(
+                        cfg,
+                        receptor_path,
+                        peptide_path,
+                        out_path,
+                        total_generations,
+                        progress_bar,
+                        progress_text,
+                    )
                 except Exception as exc:  # noqa: BLE001
                     st.exception(exc)
                     return
@@ -330,6 +469,18 @@ class DockingPage(BasePage):
             results: dict[str, dict[str, Any]] = {}
             resolved_configs: dict[str, dict[str, Any]] = {}
             st.write("Executando pipeline de docking (modo de comparação)...")
+            progress_container = st.container()
+            with progress_container:
+                st.subheader("Progresso da comparação")
+                col_full, col_reduced = st.columns(2)
+                with col_full:
+                    st.markdown("**Completo**")
+                    progress_full = st.progress(0.0)
+                    progress_full_text = st.empty()
+                with col_reduced:
+                    st.markdown("**Reduzido**")
+                    progress_reduced = st.progress(0.0)
+                    progress_reduced_text = st.empty()
             for run in runs:
                 run_out_dir = run["out_dir"]
                 run_out_dir.mkdir(parents=True, exist_ok=True)
@@ -340,9 +491,17 @@ class DockingPage(BasePage):
                 resolved_configs[run["label"]] = run_cfg_dict
                 try:
                     cfg = Config(**run_cfg_dict)
-                    start_time = time.perf_counter()
-                    result = run_pipeline(cfg, receptor_path, peptide_path, str(run_out_dir))
-                    elapsed = time.perf_counter() - start_time
+                    progress_bar = progress_full if run["label"] == "full" else progress_reduced
+                    progress_text = progress_full_text if run["label"] == "full" else progress_reduced_text
+                    result, elapsed = run_pipeline_with_progress(
+                        cfg,
+                        receptor_path,
+                        peptide_path,
+                        run_out_dir,
+                        total_generations,
+                        progress_bar,
+                        progress_text,
+                    )
                 except Exception as exc:  # noqa: BLE001
                     st.exception(exc)
                     return
