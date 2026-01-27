@@ -71,9 +71,12 @@ def _dummy_inputs() -> tuple[Any, Any, list[Pocket]]:
 
 
 def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: str) -> RunResult:
-    """Run the docking pipeline."""
+    """Executa o pipeline de docking."""
 
     np.random.seed(cfg.seed)
+    # PT-BR: criamos o diretório antes do logger para permitir escrita incremental
+    # do metrics.jsonl, evitando que a UI só veja progresso no final.
+    os.makedirs(out_dir, exist_ok=True)
     if receptor_path == "__dummy__" and peptide_path == "__dummy__":
         receptor, peptide, pockets = _dummy_inputs()
     else:
@@ -85,7 +88,10 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
             pockets_path=getattr(cfg, "pockets_path", None),
         )
 
-    logger = RunLogger()
+    # PT-BR: live_write=True garante métricas disponíveis durante a execução.
+    # As métricas por geração incluem "generation" (0..N) para a UI calcular
+    # progresso correto; o "step" permanece como contador global para séries.
+    logger = RunLogger(out_dir=out_dir, live_write=True)
     total_pockets = len(pockets)
     if not getattr(cfg, "full_search", True):
         # PT-BR: o erro anterior ocorria quando o "reduced" ainda varria todos
@@ -123,7 +129,6 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
         logger=logger,
     )
 
-    os.makedirs(out_dir, exist_ok=True)
     result_path = os.path.join(out_dir, "result.json")
     with open(result_path, "w", encoding="utf-8") as handle:
         payload = {

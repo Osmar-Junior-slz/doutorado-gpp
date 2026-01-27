@@ -66,12 +66,15 @@ class ABCGAVGOSSearch(SearchEngine):
         score_cheap_fn: Callable[..., float],
         score_expensive_fn: Callable[..., float],
         logger: Any,
+        pocket_index: int,
         step_offset: int,
     ) -> tuple[Pose, Population]:
         """Executa a busca dentro de um único pocket.
 
         PT-BR: esta função garante que cada pocket tenha sua própria população
         e RNG, evitando a alternância não controlada que causava o sawtooth.
+        Além disso, registramos a "generation" local (0..N) separada do "step"
+        global, pois a UI deve exibir progresso por geração sem extrapolar N.
         """
 
         generations = int(getattr(cfg, "generations", 1) or 1)
@@ -131,10 +134,17 @@ class ABCGAVGOSSearch(SearchEngine):
                 best_pose.meta["pocket_id"] = getattr(pocket, "id", None)
 
             step = step_offset + generation
-            logger.log_metric("best_score", float(gen_best_score), step=step)
-            logger.log_metric("mean_score", float(np.mean(scores)), step=step)
-            logger.log_metric("n_eval", float(len(poses)), step=step)
-            logger.log_metric("n_clashes", float(n_clashes), step=step)
+            # PT-BR: "step" é global (inclui offset de pocket) para séries; já
+            # "generation" é local e limita o progresso a cfg.generations.
+            extra = {
+                "generation": generation,
+                "total_generations": generations,
+                "pocket_index": pocket_index,
+            }
+            logger.log_metric("best_score", float(gen_best_score), step=step, extra=extra)
+            logger.log_metric("mean_score", float(np.mean(scores)), step=step, extra=extra)
+            logger.log_metric("n_eval", float(len(poses)), step=step, extra=extra)
+            logger.log_metric("n_clashes", float(n_clashes), step=step, extra=extra)
 
         best_pose.meta["generation"] = best_generation
         return best_pose, population
@@ -182,6 +192,7 @@ class ABCGAVGOSSearch(SearchEngine):
                 score_cheap_fn=score_cheap_fn,
                 score_expensive_fn=score_expensive_fn,
                 logger=logger,
+                pocket_index=pocket_idx,
                 step_offset=step_offset,
             )
             last_population = population
