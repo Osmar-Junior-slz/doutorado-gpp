@@ -1,4 +1,7 @@
-"""I/O helpers for dockingpp."""
+"""Helpers de I/O para o dockingpp."""
+
+# PT-BR: este módulo lida com carregamento de dados e integra o pipeline de
+# escaneamento/detecção quando bolsões são solicitados.
 
 from __future__ import annotations
 
@@ -9,18 +12,20 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import yaml
 
+from dockingpp.core.deteccao_bolsoes import construir_bolso_global, detectar_bolsoes
+from dockingpp.core.escaneamento_receptor import escanear_receptor
 from dockingpp.data.structs import Pocket
 
 
 def load_config(path: str) -> Dict[str, Any]:
-    """Load a YAML configuration file."""
+    """Carrega um arquivo de configuração YAML."""
 
     with open(path, "r", encoding="utf-8") as handle:
         return yaml.safe_load(handle) or {}
 
 
 def load_receptor(path: str) -> Any:
-    """Load receptor data from disk."""
+    """Carrega dados do receptor a partir do disco."""
 
     if path == "__dummy__":
         return {"dummy": True}
@@ -28,7 +33,7 @@ def load_receptor(path: str) -> Any:
 
 
 def load_peptide(path: str) -> Any:
-    """Load peptide data from disk."""
+    """Carrega dados do peptídeo a partir do disco."""
 
     if path == "__dummy__":
         return {"dummy": True}
@@ -36,9 +41,9 @@ def load_peptide(path: str) -> Any:
 
 
 def load_pdb_coords(path: str) -> np.ndarray:
-    """Load atomic coordinates from a PDB file.
+    """Carrega coordenadas atômicas de um arquivo PDB.
 
-    Reads ATOM and HETATM records using standard PDB column positions.
+    PT-BR: lê registros ATOM e HETATM usando colunas padrão do PDB.
     """
 
     coords: list[list[float]] = []
@@ -60,6 +65,7 @@ def load_pdb_coords(path: str) -> np.ndarray:
 
 
 def _extract_coords(receptor: Any) -> np.ndarray:
+    """Extrai coordenadas do receptor (PT-BR)."""
     if isinstance(receptor, dict) and "coords" in receptor:
         return np.asarray(receptor["coords"], dtype=float)
     if isinstance(receptor, np.ndarray):
@@ -71,6 +77,7 @@ def _extract_coords(receptor: Any) -> np.ndarray:
 
 
 def _get_cfg_value(cfg: Optional[Any], key: str, default: Any) -> Any:
+    """Busca um valor no cfg com fallback (PT-BR)."""
     if cfg is None:
         return default
     if isinstance(cfg, dict):
@@ -83,106 +90,32 @@ def load_pockets(
     cfg: Optional[Any] = None,
     pockets_path: Optional[str] = None,
 ) -> List[Pocket]:
-    """Infer binding pockets from a receptor."""
+    """Inferir bolsões de ligação a partir do receptor (pipeline PhD)."""
 
     receptor_coords = _extract_coords(receptor)
-    pocket_margin = float(_get_cfg_value(cfg, "pocket_margin", 2.0))
+    scan = escanear_receptor(receptor, cfg=cfg)
+    pockets = detectar_bolsoes(scan, cfg=cfg)
+
+    # PT-BR: se houver um arquivo de bolsões, usamos como filtro/seleção
+    # baseada nos bolsões detectados (sem criar bolsões padrão).
     if pockets_path and os.path.exists(pockets_path):
         with open(pockets_path, "r", encoding="utf-8") as handle:
             payload = json.load(handle) or {}
         pockets_payload = payload.get("pockets", [])
-        pockets: list[Pocket] = []
-        for idx, entry in enumerate(pockets_payload):
-            center = np.asarray(entry.get("center", [0.0, 0.0, 0.0]), dtype=float)
-            radius = float(entry.get("radius", 0.0))
-            pocket_id = str(entry.get("id") or f"pocket_{idx}")
-            if receptor_coords.size:
-                deltas = receptor_coords - center.reshape(1, 3)
-                dists = np.linalg.norm(deltas, axis=1)
-                mask = dists <= radius
-                pocket_coords = receptor_coords[mask]
-            else:
-                pocket_coords = receptor_coords.copy()
-            pockets.append(
-                Pocket(
-                    id=pocket_id,
-                    center=center,
-                    radius=radius,
-                    coords=pocket_coords,
-                    meta={"coords": pocket_coords},
-                )
-            )
-        return pockets
-
-    def build_pocket(pocket_id: str, coords: np.ndarray) -> Pocket:
-        if coords.size:
-            center = coords.mean(axis=0)
-            deltas = coords - center.reshape(1, 3)
-            max_dist = float(np.max(np.linalg.norm(deltas, axis=1)))
-        else:
-            center = np.zeros(3, dtype=float)
-            max_dist = 0.0
-        radius = max_dist + pocket_margin
-        return Pocket(
-            id=pocket_id,
-            center=center,
-            radius=radius,
-            coords=coords,
-            meta={"coords": coords},
-        )
-
-    if receptor_coords.size:
-        default_min_atoms = max(5, int(receptor_coords.shape[0] * 0.02))
-    else:
-        default_min_atoms = 0
-    min_pocket_atoms = int(_get_cfg_value(cfg, "min_pocket_atoms", default_min_atoms) or 0)
-    grid_size = float(_get_cfg_value(cfg, "pocket_grid_size", 8.0))
-    pockets: list[Pocket] = []
-
-    if receptor_coords.size and grid_size > 0:
-        min_coord = receptor_coords.min(axis=0)
-        indices = np.floor((receptor_coords - min_coord.reshape(1, 3)) / grid_size).astype(int)
-        groups: dict[tuple[int, int, int], list[int]] = {}
-        for idx, cell in enumerate(indices):
-            key = (int(cell[0]), int(cell[1]), int(cell[2]))
-            groups.setdefault(key, []).append(idx)
-        for pocket_idx, (cell, atom_indices) in enumerate(sorted(groups.items())):
-            if min_pocket_atoms and len(atom_indices) < min_pocket_atoms:
-                continue
-            coords = receptor_coords[atom_indices]
-            pockets.append(build_pocket(f"auto_grid_{pocket_idx}", coords))
-
-    if receptor_coords.size and len(pockets) <= 1:
-        pocket_count = int(_get_cfg_value(cfg, "auto_pocket_count", 4) or 0)
-        if pocket_count > 1:
-            spans = np.ptp(receptor_coords, axis=0)
-            axis = int(np.argmax(spans))
-            min_val = float(receptor_coords[:, axis].min())
-            max_val = float(receptor_coords[:, axis].max())
-            if max_val > min_val:
-                edges = np.linspace(min_val, max_val, num=pocket_count + 1)
-                bins = np.digitize(receptor_coords[:, axis], edges, right=False) - 1
-                bins = np.clip(bins, 0, pocket_count - 1)
-                axis_pockets: list[Pocket] = []
-                for idx in range(pocket_count):
-                    mask = bins == idx
-                    if not np.any(mask):
-                        continue
-                    coords = receptor_coords[mask]
-                    if min_pocket_atoms and coords.shape[0] < min_pocket_atoms:
-                        continue
-                    axis_pockets.append(build_pocket(f"auto_axis_{idx}", coords))
-                if len(axis_pockets) <= 1:
-                    axis_pockets = [
-                        build_pocket(f"auto_axis_{idx}", receptor_coords[bins == idx])
-                        for idx in range(pocket_count)
-                        if np.any(bins == idx)
-                    ]
-                if len(axis_pockets) > len(pockets):
-                    pockets = axis_pockets
+        if pockets_payload and pockets:
+            selected: list[Pocket] = []
+            for entry in pockets_payload:
+                center = np.asarray(entry.get("center", [0.0, 0.0, 0.0]), dtype=float)
+                deltas = np.array([np.linalg.norm(pocket.center - center) for pocket in pockets])
+                if deltas.size == 0:
+                    continue
+                nearest_idx = int(np.argmin(deltas))
+                selected.append(pockets[nearest_idx])
+            if selected:
+                return selected
 
     if pockets:
         return pockets
 
-    pocket_coords = receptor_coords.copy()
-    return [build_pocket("global", pocket_coords)]
+    # PT-BR: fallback global explícito somente quando não há bolsões.
+    return [construir_bolso_global(receptor_coords, cfg=cfg)]
