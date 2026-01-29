@@ -152,36 +152,7 @@ def load_pockets(
             coords = receptor_coords[atom_indices]
             pockets.append(build_pocket(f"auto_grid_{pocket_idx}", coords))
 
-    if receptor_coords.size and len(pockets) <= 1:
-        pocket_count = int(_get_cfg_value(cfg, "auto_pocket_count", 4) or 0)
-        if pocket_count > 1:
-            spans = np.ptp(receptor_coords, axis=0)
-            axis = int(np.argmax(spans))
-            min_val = float(receptor_coords[:, axis].min())
-            max_val = float(receptor_coords[:, axis].max())
-            if max_val > min_val:
-                edges = np.linspace(min_val, max_val, num=pocket_count + 1)
-                bins = np.digitize(receptor_coords[:, axis], edges, right=False) - 1
-                bins = np.clip(bins, 0, pocket_count - 1)
-                axis_pockets: list[Pocket] = []
-                for idx in range(pocket_count):
-                    mask = bins == idx
-                    if not np.any(mask):
-                        continue
-                    coords = receptor_coords[mask]
-                    if min_pocket_atoms and coords.shape[0] < min_pocket_atoms:
-                        continue
-                    axis_pockets.append(build_pocket(f"auto_axis_{idx}", coords))
-                if len(axis_pockets) <= 1:
-                    axis_pockets = [
-                        build_pocket(f"auto_axis_{idx}", receptor_coords[bins == idx])
-                        for idx in range(pocket_count)
-                        if np.any(bins == idx)
-                    ]
-                if len(axis_pockets) > len(pockets):
-                    pockets = axis_pockets
-
-    if pockets:
+    if len(pockets) > 1:
         return pockets
 
     pocket_coords = receptor_coords.copy()
