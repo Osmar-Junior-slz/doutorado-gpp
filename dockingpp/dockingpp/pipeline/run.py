@@ -92,6 +92,7 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
     # As métricas por geração incluem "generation" (0..N) para a UI calcular
     # progresso correto; o "step" permanece como contador global para séries.
     logger = RunLogger(out_dir=out_dir, live_write=True)
+    cfg.expensive_logger = logger
     total_pockets = len(pockets)
     if not getattr(cfg, "full_search", True):
         # PT-BR: o erro anterior ocorria quando o "reduced" ainda varria todos
