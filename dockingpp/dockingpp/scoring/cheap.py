@@ -42,8 +42,19 @@ def score_pose_cheap(pose: Pose, pocket: Pocket, weights: Dict[str, float]) -> f
         clashes += float(np.sum(dists < clash_thresh))
         contacts += float(np.sum((dists >= clash_thresh) & (dists <= contact_thresh)))
 
-    w_contact = weights.get("w_contact", 1.0)
-    w_clash = weights.get("w_clash", 1.0)
+    # Prefer singular keys when both singular/plural are provided.
+    if "w_contact" in weights:
+        w_contact = weights["w_contact"]
+    elif "w_contacts" in weights:
+        w_contact = weights["w_contacts"]
+    else:
+        w_contact = 1.0
+    if "w_clash" in weights:
+        w_clash = weights["w_clash"]
+    elif "w_clashes" in weights:
+        w_clash = weights["w_clashes"]
+    else:
+        w_clash = 1.0
 
     pose.meta["contacts"] = contacts
     pose.meta["clashes"] = clashes
