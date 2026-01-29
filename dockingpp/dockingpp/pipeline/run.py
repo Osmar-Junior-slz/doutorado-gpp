@@ -1,24 +1,18 @@
-"""Entradas do pipeline principal."""
-
-# PT-BR: este módulo coordena o pipeline PhD (scan -> detecção -> ranking -> docking).
+"""Pipeline entrypoints."""
 
 from __future__ import annotations
 
 import json
 import os
-import time
 from typing import Any, Dict
 
 import numpy as np
 from pydantic import BaseModel, Field
 
-from dockingpp.core.deteccao_bolsoes import construir_bolso_global, detectar_bolsoes
-from dockingpp.core.escaneamento_receptor import escanear_receptor
-from dockingpp.core.ranqueamento_bolsoes import ranquear_bolsoes, selecionar_top_bolsoes
-from dockingpp.data.io import load_peptide, load_receptor
+from dockingpp.data.io import load_peptide, load_pockets, load_receptor
 from dockingpp.data.structs import Pocket, RunResult
 from dockingpp.pipeline.logging import RunLogger
-from dockingpp.priors.pocket import PriorNetPocket
+from dockingpp.priors.pocket import PriorNetPocket, rank_pockets
 from dockingpp.priors.pose import PriorNetPose
 from dockingpp.scoring.cheap import score_pose_cheap
 from dockingpp.scoring.expensive import score_pose_expensive
@@ -26,7 +20,7 @@ from dockingpp.search.abc_ga_vgos import ABCGAVGOSSearch
 
 
 class Config(BaseModel):
-    """Modelo de configuração do dockingpp."""
+    """Configuration model for dockingpp."""
 
     seed: int = 7
     device: str = "cpu"
@@ -50,8 +44,7 @@ class Config(BaseModel):
         extra = "allow"
 
 
-def _dummy_inputs() -> tuple[Any, Any]:
-    """Cria inputs dummy para testes rápidos (PT-BR)."""
+def _dummy_inputs() -> tuple[Any, Any, list[Pocket]]:
     receptor_coords = np.array(
         [
             [0.0, 0.0, 0.0],
@@ -68,20 +61,13 @@ def _dummy_inputs() -> tuple[Any, Any]:
         ],
         dtype=float,
     )
+    pockets = [
+        Pocket(id="dummy-0", center=np.array([0.0, 0.0, 0.0]), radius=5.0, coords=receptor_coords),
+        Pocket(id="dummy-1", center=np.array([10.0, 0.0, 0.0]), radius=5.0, coords=receptor_coords),
+        Pocket(id="dummy-2", center=np.array([0.0, 10.0, 0.0]), radius=5.0, coords=receptor_coords),
+    ]
     receptor = {"dummy": True, "coords": receptor_coords}
-    return receptor, {"dummy": True}
-
-
-def _build_fallback_pocket(receptor: Any, cfg: Config) -> Pocket:
-    """Constrói um bolso global como fallback explícito (PT-BR)."""
-
-    if isinstance(receptor, dict):
-        coords = np.asarray(receptor.get("coords", np.zeros((0, 3), dtype=float)), dtype=float)
-    elif isinstance(receptor, np.ndarray):
-        coords = np.asarray(receptor, dtype=float)
-    else:
-        coords = np.asarray(getattr(receptor, "coords", np.zeros((0, 3), dtype=float)), dtype=float)
-    return construir_bolso_global(coords, cfg=cfg)
+    return receptor, {"dummy": True}, pockets
 
 
 def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: str) -> RunResult:
@@ -92,57 +78,45 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
     # do metrics.jsonl, evitando que a UI só veja progresso no final.
     os.makedirs(out_dir, exist_ok=True)
     if receptor_path == "__dummy__" and peptide_path == "__dummy__":
-        receptor, peptide = _dummy_inputs()
+        receptor, peptide, pockets = _dummy_inputs()
     else:
         receptor = load_receptor(receptor_path)
         peptide = load_peptide(peptide_path)
+        pockets = load_pockets(
+            receptor,
+            cfg=cfg,
+            pockets_path=getattr(cfg, "pockets_path", None),
+        )
 
     # PT-BR: live_write=True garante métricas disponíveis durante a execução.
     # As métricas por geração incluem "generation" (0..N) para a UI calcular
     # progresso correto; o "step" permanece como contador global para séries.
     logger = RunLogger(out_dir=out_dir, live_write=True)
-    scan_start = time.perf_counter()
-    scan = escanear_receptor(receptor, cfg=cfg)
-    scan_time = time.perf_counter() - scan_start
-
-    detection_start = time.perf_counter()
-    detected = detectar_bolsoes(scan, cfg=cfg)
-    detection_time = time.perf_counter() - detection_start
-
-    pocket_fallback_used = 0
-    detected_count = len(detected)
-    if detected_count == 0:
-        # PT-BR: fallback global explícito (somente quando detecção falha/zero).
-        detected = [_build_fallback_pocket(receptor, cfg)]
-        pocket_fallback_used = 1
-
-    ranking_start = time.perf_counter()
-    ranked = ranquear_bolsoes(receptor, detected, peptide=peptide)
-    ranking_time = time.perf_counter() - ranking_start
-
-    full_search = bool(getattr(cfg, "full_search", True))
-    top_pockets = int(getattr(cfg, "top_pockets", len(ranked)) or 0)
-    pockets = selecionar_top_bolsoes(ranked, top_pockets, full_search=full_search)
+    total_pockets = len(pockets)
+    if not getattr(cfg, "full_search", True):
+        # PT-BR: o erro anterior ocorria quando o "reduced" ainda varria todos
+        # os pockets na busca. Aqui limitamos explicitamente aos top_pockets,
+        # garantindo que o espaço de busca seja reduzido de fato.
+        ranked = rank_pockets(receptor, pockets, peptide=peptide)
+        top_pockets = int(getattr(cfg, "top_pockets", len(ranked)) or 0)
+        if top_pockets <= 0:
+            pockets = []
+        elif total_pockets > top_pockets:
+            pockets = [pocket for pocket, _ in ranked[:top_pockets]]
+        else:
+            pockets = [pocket for pocket, _ in ranked]
 
     # PT-BR: métricas globais de seleção. "n_pockets_total" é o total detectado,
     # "n_pockets_used" é quantos realmente foram passados para a busca, e
     # "reduction_ratio" = 1 - used/total (deve ser > 0 no modo reduced).
-    total_pockets = detected_count
     selected_pockets = len(pockets)
     logger.log_metric("total_pockets", float(total_pockets), step=0)
     logger.log_metric("selected_pockets", float(selected_pockets), step=0)
-    logger.log_metric("n_pockets_detected", float(total_pockets), step=0)
-    logger.log_metric("n_pockets_selected", float(selected_pockets), step=0)
-    logger.log_metric("pocket_fallback_used", float(pocket_fallback_used), step=0)
-    logger.log_metric("scan_time_seconds", float(scan_time), step=0)
-    logger.log_metric("pocket_detection_time_seconds", float(detection_time), step=0)
-    logger.log_metric("pocket_ranking_time_seconds", float(ranking_time), step=0)
     logger.log_global_metrics(total_pockets, selected_pockets)
     search = ABCGAVGOSSearch(cfg)
     prior_pocket = PriorNetPocket()
     prior_pose = PriorNetPose()
 
-    docking_start = time.perf_counter()
     result = search.search(
         receptor=receptor,
         peptide=peptide,
@@ -154,8 +128,6 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
         prior_pose=prior_pose,
         logger=logger,
     )
-    docking_time = time.perf_counter() - docking_start
-    logger.log_metric("docking_time_seconds", float(docking_time), step=0)
 
     result_path = os.path.join(out_dir, "result.json")
     with open(result_path, "w", encoding="utf-8") as handle:

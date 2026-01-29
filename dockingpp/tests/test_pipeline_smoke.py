@@ -1,8 +1,6 @@
-"""Testes de fumaça do pipeline principal (PT-BR)."""
-
 import json
 
-from dockingpp.data.io import load_config
+from dockingpp.data.io import load_config, load_peptide, load_pockets, load_receptor
 from dockingpp.pipeline.run import Config, run_pipeline
 from dockingpp.data.structs import RunResult
 
@@ -55,26 +53,16 @@ def test_pipeline_pocket_reduction(tmp_path):
     used_pockets = int(metric_map.get("n_pockets_used", 0))
     reduction_ratio = float(metric_map.get("reduction_ratio", 0.0))
 
-    if total_pockets > 1:
-        assert used_pockets < total_pockets
-        assert reduction_ratio > 0
+    assert used_pockets < total_pockets
+    assert reduction_ratio > 0
 
 
-def test_pipeline_registra_metricas_de_bolso(tmp_path):
-    """Garante que métricas de bolsões estejam presentes no metrics.jsonl."""
+def test_load_pockets_dummy_global():
+    receptor = load_receptor("__dummy__")
+    peptide = load_peptide("__dummy__")
 
-    cfg_data = load_config("configs/default.yaml")
-    cfg = Config(**cfg_data)
-    out_dir = tmp_path / "out_metrics"
+    pockets = load_pockets(receptor)
 
-    run_pipeline(cfg, "__dummy__", "__dummy__", str(out_dir))
-
-    metrics = []
-    with open(out_dir / "metrics.jsonl", "r", encoding="utf-8") as handle:
-        for line in handle:
-            metrics.append(json.loads(line))
-    metric_map = {entry["name"]: entry["value"] for entry in metrics}
-
-    assert "n_pockets_detected" in metric_map
-    assert "n_pockets_selected" in metric_map
-    assert "pocket_fallback_used" in metric_map
+    assert peptide.get("dummy") is True
+    assert len(pockets) >= 1
+    assert pockets[0].id == "global"
