@@ -39,6 +39,7 @@ class Config(BaseModel):
     expensive_topk: int = 0
     top_pockets: int = 3
     full_search: bool = True
+    max_pockets_used: int = 8
 
     class Config:
         extra = "allow"
@@ -94,18 +95,26 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
     logger = RunLogger(out_dir=out_dir, live_write=True)
     cfg.expensive_logger = logger
     total_pockets = len(pockets)
-    if not getattr(cfg, "full_search", True):
+    ranked = rank_pockets(receptor, pockets, peptide=peptide)
+    if not ranked:
+        global_pockets = [pocket for pocket in pockets if getattr(pocket, "id", None) == "global"]
+        pockets = global_pockets or pockets
+    elif not getattr(cfg, "full_search", True):
         # PT-BR: o erro anterior ocorria quando o "reduced" ainda varria todos
         # os pockets na busca. Aqui limitamos explicitamente aos top_pockets,
         # garantindo que o espaço de busca seja reduzido de fato.
-        ranked = rank_pockets(receptor, pockets, peptide=peptide)
         top_pockets = int(getattr(cfg, "top_pockets", len(ranked)) or 0)
         if top_pockets <= 0:
-            pockets = []
+            pockets = [pocket for pocket, _ in ranked]
         elif total_pockets > top_pockets:
             pockets = [pocket for pocket, _ in ranked[:top_pockets]]
         else:
             pockets = [pocket for pocket, _ in ranked]
+    else:
+        max_pockets_used = int(getattr(cfg, "max_pockets_used", 8) or 0)
+        if max_pockets_used <= 0:
+            max_pockets_used = len(ranked)
+        pockets = [pocket for pocket, _ in ranked[:max_pockets_used]]
 
     # PT-BR: métricas globais de seleção. "n_pockets_total" é o total detectado,
     # "n_pockets_used" é quantos realmente foram passados para a busca, e
