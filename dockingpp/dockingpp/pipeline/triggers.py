@@ -20,7 +20,6 @@ def should_run_expensive(gen: int, rank: int, cfg: object) -> bool:
     """Determine whether to run expensive scoring."""
 
     if getattr(cfg, "expensive_every", 0) <= 0:
-        _log_expensive_skip(cfg, gen, rank, reason="disabled")
         return False
     if gen % getattr(cfg, "expensive_every", 1) != 0:
         _log_expensive_skip(cfg, gen, rank, reason="generation_mismatch")
