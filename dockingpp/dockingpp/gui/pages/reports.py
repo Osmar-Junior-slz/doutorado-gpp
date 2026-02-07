@@ -14,10 +14,14 @@ from dockingpp.gui.pages.base import BasePage
 from dockingpp.gui.services.dialog_service import choose_directory
 from dockingpp.gui.services.report_service import (
     ReportBundle,
+    aggregate_cost,
+    best_so_far,
     build_compare_table,
+    extract_best_scores,
     infer_json_kind,
     load_json,
     load_jsonl,
+    load_metrics_series,
     metrics_series,
 )
 from dockingpp.gui.state import AppState, StateKeys
@@ -84,6 +88,23 @@ class ReportsPage(BasePage):
             if step in best_by_step and item.get("score") is not None:
                 # PT-BR: usamos avaliações no eixo X e best score no eixo Y.
                 paired.append({"step": float(item["score"]), "score": best_by_step[step]})
+        return paired
+
+    @staticmethod
+    def _pair_best_vs_cost(
+        best_series: list[dict[str, float]],
+        cost_series: list[dict[str, float]],
+    ) -> list[dict[str, float]]:
+        """Associa best score ao custo acumulado (n_eval_total)."""
+
+        cost_by_step = {
+            item["step"]: float(item["score"]) for item in cost_series if item.get("score") is not None
+        }
+        paired = []
+        for item in best_series:
+            step = item.get("step")
+            if step in cost_by_step and item.get("score") is not None:
+                paired.append({"step": cost_by_step[step], "score": float(item["score"])})
         return paired
 
     @staticmethod
@@ -206,6 +227,74 @@ class ReportsPage(BasePage):
         return next((data.get(key) for key in keys if data.get(key) is not None), None)
 
     @staticmethod
+    def _resolve_report_path(base_dir: Path | None, raw_path: str | None) -> Path | None:
+        """Resolve caminhos relativos usando o diretório base do relatório."""
+
+        if not raw_path:
+            return None
+        candidate = Path(raw_path).expanduser()
+        if candidate.is_absolute():
+            return candidate
+        if base_dir:
+            return base_dir / candidate
+        return candidate
+
+    def _build_summary_rows(
+        self,
+        summary_data: dict[str, Any],
+        fallback_scores: dict[str, float | None] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Monta linhas para a tabela resumo a partir do summary.json."""
+
+        fallback_scores = fallback_scores or {}
+        return [
+            {
+                "Campo": "pockets_detected",
+                "Valor": self._summary_value(
+                    summary_data,
+                    ["pockets_detected", "n_pockets_total", "pockets_total", "n_pockets_detected"],
+                ),
+            },
+            {
+                "Campo": "pockets_used",
+                "Valor": self._summary_value(
+                    summary_data,
+                    ["pockets_used", "n_pockets_used"],
+                ),
+            },
+            {
+                "Campo": "best_cheap",
+                "Valor": self._summary_value(
+                    summary_data,
+                    ["best_score_cheap", "best_score", "best"],
+                )
+                or fallback_scores.get("best_cheap"),
+            },
+            {
+                "Campo": "best_expensive",
+                "Valor": self._summary_value(
+                    summary_data,
+                    ["best_score_expensive"],
+                )
+                or fallback_scores.get("best_expensive"),
+            },
+            {
+                "Campo": "total_s",
+                "Valor": self._summary_value(
+                    summary_data,
+                    ["total_s", "elapsed_s", "elapsed_seconds", "elapsed"],
+                ),
+            },
+            {
+                "Campo": "expensive_ran_count",
+                "Valor": self._summary_value(
+                    summary_data,
+                    ["expensive_ran_count"],
+                ),
+            },
+        ]
+
+    @staticmethod
     def _guess_metrics_index(options: list[str], tokens: list[str]) -> int:
         """Sugere índice padrão para arquivos de métricas baseado em tokens."""
 
@@ -215,33 +304,36 @@ class ReportsPage(BasePage):
                 return idx
         return 0
 
+    @staticmethod
+    def _extract_compare_block(report_data: dict[str, Any], label: str) -> dict[str, Any] | None:
+        """Busca o bloco de comparação correspondente ao rótulo fornecido."""
+
+        for container in (report_data, report_data.get("runs"), report_data.get("comparison")):
+            if isinstance(container, dict) and label in container and isinstance(container[label], dict):
+                return container[label]
+        return None
+
+    def _load_summary_data(self, summary_path: Path | None, fallback: dict[str, Any]) -> dict[str, Any]:
+        """Carrega summary.json, caindo no fallback em caso de erro."""
+
+        if summary_path and summary_path.exists():
+            try:
+                return load_json(summary_path)
+            except (OSError, json.JSONDecodeError):
+                return fallback
+        return fallback
+
     def _render_single_report(
         self,
         bundle: ReportBundle,
         metrics_records: list[dict[str, Any]] | None,
+        summary_data: dict[str, Any],
     ) -> None:
         """Renderiza relatório de execução única com gráficos e resumos."""
 
         st.subheader("Resumo da execução")
-        summary_rows = [
-            {
-                "Campo": "Melhor score (cheap)",
-                "Valor": self._summary_value(bundle.main_json, ["best_score_cheap", "best_score", "best"]),
-            },
-            {
-                "Campo": "Avaliações",
-                "Valor": self._summary_value(bundle.main_json, ["n_eval", "evals", "evaluations"]),
-            },
-            {"Campo": "Bolsões usados", "Valor": bundle.main_json.get("n_pockets_used")},
-            {
-                "Campo": "Razão de redução",
-                "Valor": self._summary_value(bundle.main_json, ["reduction_ratio", "ratio"]),
-            },
-            {
-                "Campo": "Tempo (s)",
-                "Valor": self._summary_value(bundle.main_json, ["elapsed_s", "elapsed_seconds", "elapsed"]),
-            },
-        ]
+        fallback_scores = extract_best_scores(metrics_records or [])
+        summary_rows = self._build_summary_rows(summary_data, fallback_scores)
         st.table(summary_rows)
         summary_df = pd.DataFrame(summary_rows)
         self._download_csv_button("Baixar tabela resumo (CSV)", summary_df, "resumo_execucao.csv")
@@ -256,48 +348,57 @@ class ReportsPage(BasePage):
             metrics_records,
             ["best_score_cheap", "best_score", "best"],
             aggregate="min",
-            cumulative_best=True,
         )
         if best_series:
-            best_series = self._prepare_series(best_series)
+            best_series = best_so_far(best_series)
             fig = self._plot_line(
                 best_series,
                 "step",
                 "score",
-                "Best score vs geração",
-                "Geração",
-                "Best score",
+                "Best score (cheap) vs step",
+                "Step",
+                "Best score (cheap)",
             )
             st.pyplot(fig)
             plt.close(fig)
         else:
             st.warning("Não foi possível encontrar best score nas métricas.")
 
-        eval_series, _ = metrics_series(metrics_records, ["n_eval", "evals", "evaluations"])
-        if eval_series and best_series:
-            evals_cum = self._compute_evals_cumulative(eval_series)
-            paired_series = self._pair_best_vs_evals(best_series, evals_cum)
-            if paired_series:
-                fig = self._plot_line(
-                    paired_series,
-                    "step",
-                    "score",
-                    "Best score vs avaliações acumuladas",
-                    "Avaliações acumuladas",
-                    "Best score",
-                )
-                st.pyplot(fig)
-                plt.close(fig)
-            else:
-                st.warning("Não foi possível calcular avaliações acumuladas.")
-        elif not eval_series:
-            st.warning("n_eval não disponível para plotar avaliações.")
+        cost_series = aggregate_cost(metrics_records)
+        if cost_series and best_series:
+            paired_series = self._pair_best_vs_cost(best_series, cost_series)
+            best_expensive_series, _ = metrics_series(
+                metrics_records,
+                ["best_score_expensive"],
+                aggregate="min",
+            )
+            lines = [paired_series]
+            labels = ["Cheap"]
+            if best_expensive_series:
+                best_expensive_series = best_so_far(best_expensive_series)
+                paired_expensive = self._pair_best_vs_cost(best_expensive_series, cost_series)
+                if paired_expensive:
+                    lines.append(paired_expensive)
+                    labels.append("Expensive")
+            fig = self._plot_multi_line(
+                lines,
+                labels,
+                "Custo acumulado vs best score",
+                "n_eval_total (aprox.)",
+                "Best score",
+            )
+            st.pyplot(fig)
+            plt.close(fig)
+        else:
+            st.warning("n_eval_total não disponível para plotar custo acumulado.")
 
     def _render_compare_report(
         self,
         bundle: ReportBundle,
         metrics_full: list[dict[str, Any]] | None,
         metrics_reduced: list[dict[str, Any]] | None,
+        summary_full: dict[str, Any],
+        summary_reduced: dict[str, Any],
     ) -> None:
         """Renderiza relatório comparativo entre modos completo e reduzido."""
 
@@ -309,6 +410,29 @@ class ReportsPage(BasePage):
             self._download_csv_button("Baixar tabela resumo (CSV)", compare_df, "comparacao_full_reduced.csv")
         else:
             st.warning("Não foi possível montar a tabela de comparação com os dados disponíveis.")
+
+        st.subheader("Resumo do summary.json")
+        fallback_full = extract_best_scores(metrics_full or [])
+        fallback_reduced = extract_best_scores(metrics_reduced or [])
+        summary_table = pd.DataFrame(
+            [
+                {
+                    "Modo": "Completo",
+                    **{
+                        row["Campo"]: row["Valor"]
+                        for row in self._build_summary_rows(summary_full, fallback_full)
+                    },
+                },
+                {
+                    "Modo": "Reduzido",
+                    **{
+                        row["Campo"]: row["Valor"]
+                        for row in self._build_summary_rows(summary_reduced, fallback_reduced)
+                    },
+                },
+            ]
+        )
+        st.table(summary_table)
 
         if not metrics_full and not metrics_reduced:
             st.warning("Nenhum arquivo .jsonl selecionado para métricas de comparação.")
@@ -322,47 +446,43 @@ class ReportsPage(BasePage):
             metrics_full,
             ["best_score_cheap", "best_score", "best"],
             aggregate="min",
-            cumulative_best=True,
         )
         reduced_best, _ = metrics_series(
             metrics_reduced,
             ["best_score_cheap", "best_score", "best"],
             aggregate="min",
-            cumulative_best=True,
         )
         if full_best and reduced_best:
-            full_best = self._prepare_series(full_best)
-            reduced_best = self._prepare_series(reduced_best)
+            full_best = best_so_far(full_best)
+            reduced_best = best_so_far(reduced_best)
             fig = self._plot_multi_line(
                 [full_best, reduced_best],
                 ["Completo", "Reduzido"],
-                "Best score vs geração",
-                "Geração",
-                "Best score",
+                "Best score (cheap) vs step",
+                "Step",
+                "Best score (cheap)",
             )
             st.pyplot(fig)
             plt.close(fig)
         else:
             st.warning("Não foi possível montar séries de best score para comparação.")
 
-        full_eval, _ = metrics_series(metrics_full, ["n_eval", "evals", "evaluations"])
-        reduced_eval, _ = metrics_series(metrics_reduced, ["n_eval", "evals", "evaluations"])
-        if full_eval and reduced_eval and full_best and reduced_best:
-            full_eval_cum = self._compute_evals_cumulative(full_eval)
-            reduced_eval_cum = self._compute_evals_cumulative(reduced_eval)
-            full_best_eval = self._pair_best_vs_evals(full_best, full_eval_cum)
-            reduced_best_eval = self._pair_best_vs_evals(reduced_best, reduced_eval_cum)
+        full_cost = aggregate_cost(metrics_full)
+        reduced_cost = aggregate_cost(metrics_reduced)
+        if full_cost and reduced_cost and full_best and reduced_best:
+            full_best_eval = self._pair_best_vs_cost(full_best, full_cost)
+            reduced_best_eval = self._pair_best_vs_cost(reduced_best, reduced_cost)
             fig = self._plot_multi_line(
                 [full_best_eval, reduced_best_eval],
                 ["Completo", "Reduzido"],
-                "Best score vs avaliações acumuladas",
-                "Avaliações acumuladas",
+                "Custo acumulado vs best score",
+                "n_eval_total (aprox.)",
                 "Best score",
             )
             st.pyplot(fig)
             plt.close(fig)
         else:
-            st.warning("n_eval ou best score não disponíveis para comparação por avaliações.")
+            st.warning("n_eval_total ou best score não disponíveis para comparação por custo.")
 
     def render(self, state: AppState) -> None:
         """Renderiza a página completa de relatórios."""
@@ -392,6 +512,7 @@ class ReportsPage(BasePage):
         metrics_upload: st.runtime.uploaded_file_manager.UploadedFile | None = None
         metrics_full_upload: st.runtime.uploaded_file_manager.UploadedFile | None = None
         metrics_reduced_upload: st.runtime.uploaded_file_manager.UploadedFile | None = None
+        base_dir: Path | None = None
 
         if source == "Selecionar pasta":
             folder_path = st.text_input("Pasta do relatório", key=StateKeys.REPORTS_ROOT)
@@ -405,6 +526,7 @@ class ReportsPage(BasePage):
                 return
 
             selected_folder = Path(folder_path).expanduser()
+            base_dir = selected_folder
             if not selected_folder.exists():
                 st.warning("Pasta informada não existe.")
                 return
@@ -426,33 +548,55 @@ class ReportsPage(BasePage):
 
             kind = infer_json_kind(main_json)
             if kind == "single" and jsonl_map:
-                options = ["Nenhum"] + list(jsonl_map.keys())
-                selected_metrics = st.selectbox("Arquivo de métricas (.jsonl)", options)
-                if selected_metrics != "Nenhum":
-                    metrics_path = jsonl_map[selected_metrics]
-                    metrics_records = load_jsonl(metrics_path)
+                report_metrics_path = self._resolve_report_path(
+                    self._resolve_report_path(base_dir, main_json.get("outdir")),
+                    main_json.get("metrics_path"),
+                )
+                if report_metrics_path and report_metrics_path.exists():
+                    metrics_path = report_metrics_path
+                    metrics_records = load_metrics_series(metrics_path)
+                else:
+                    options = ["Nenhum"] + list(jsonl_map.keys())
+                    selected_metrics = st.selectbox("Arquivo de métricas (.jsonl)", options)
+                    if selected_metrics != "Nenhum":
+                        metrics_path = jsonl_map[selected_metrics]
+                        metrics_records = load_jsonl(metrics_path)
             elif kind == "compare" and jsonl_map:
-                options = ["Nenhum"] + list(jsonl_map.keys())
-                default_full = self._guess_metrics_index(list(jsonl_map.keys()), ["full", "completo"])
-                default_reduced = self._guess_metrics_index(list(jsonl_map.keys()), ["reduced", "reduzido"])
-                selected_full = st.selectbox(
-                    "Métricas do modo completo (.jsonl)",
-                    options,
-                    index=default_full,
-                    key="metrics_full_folder",
-                )
-                selected_reduced = st.selectbox(
-                    "Métricas do modo reduzido (.jsonl)",
-                    options,
-                    index=default_reduced,
-                    key="metrics_reduced_folder",
-                )
-                if selected_full != "Nenhum":
-                    metrics_full_path = jsonl_map[selected_full]
-                    metrics_full = load_jsonl(metrics_full_path)
-                if selected_reduced != "Nenhum":
-                    metrics_reduced_path = jsonl_map[selected_reduced]
-                    metrics_reduced = load_jsonl(metrics_reduced_path)
+                full_block = self._extract_compare_block(main_json, "full") or {}
+                reduced_block = self._extract_compare_block(main_json, "reduced") or {}
+                full_base = self._resolve_report_path(base_dir, full_block.get("outdir"))
+                reduced_base = self._resolve_report_path(base_dir, reduced_block.get("outdir"))
+                report_full_path = self._resolve_report_path(full_base, full_block.get("metrics_path"))
+                report_reduced_path = self._resolve_report_path(reduced_base, reduced_block.get("metrics_path"))
+                if report_full_path and report_full_path.exists():
+                    metrics_full_path = report_full_path
+                    metrics_full = load_metrics_series(metrics_full_path)
+                if report_reduced_path and report_reduced_path.exists():
+                    metrics_reduced_path = report_reduced_path
+                    metrics_reduced = load_metrics_series(metrics_reduced_path)
+
+                if metrics_full is None or metrics_reduced is None:
+                    options = ["Nenhum"] + list(jsonl_map.keys())
+                    default_full = self._guess_metrics_index(list(jsonl_map.keys()), ["full", "completo"])
+                    default_reduced = self._guess_metrics_index(list(jsonl_map.keys()), ["reduced", "reduzido"])
+                    selected_full = st.selectbox(
+                        "Métricas do modo completo (.jsonl)",
+                        options,
+                        index=default_full,
+                        key="metrics_full_folder",
+                    )
+                    selected_reduced = st.selectbox(
+                        "Métricas do modo reduzido (.jsonl)",
+                        options,
+                        index=default_reduced,
+                        key="metrics_reduced_folder",
+                    )
+                    if selected_full != "Nenhum":
+                        metrics_full_path = jsonl_map[selected_full]
+                        metrics_full = load_jsonl(metrics_full_path)
+                    if selected_reduced != "Nenhum":
+                        metrics_reduced_path = jsonl_map[selected_reduced]
+                        metrics_reduced = load_jsonl(metrics_reduced_path)
         else:
             main_json_upload = st.file_uploader("JSON principal", type=["json"])
             if not main_json_upload:
@@ -484,17 +628,66 @@ class ReportsPage(BasePage):
         if main_json is None:
             return
 
+        kind = infer_json_kind(main_json)
+        summary_data = main_json
+        summary_full = main_json
+        summary_reduced = main_json
+
+        if kind == "single":
+            summary_path = self._resolve_report_path(
+                self._resolve_report_path(base_dir, main_json.get("outdir")),
+                main_json.get("summary_path"),
+            )
+            summary_data = self._load_summary_data(summary_path, main_json)
+            if metrics_records is None:
+                report_metrics_path = self._resolve_report_path(
+                    self._resolve_report_path(base_dir, main_json.get("outdir")),
+                    main_json.get("metrics_path"),
+                )
+                if report_metrics_path and report_metrics_path.exists():
+                    metrics_path = report_metrics_path
+                    metrics_records = load_metrics_series(metrics_path)
+        elif kind == "compare":
+            full_block = self._extract_compare_block(main_json, "full") or {}
+            reduced_block = self._extract_compare_block(main_json, "reduced") or {}
+            full_summary_path = self._resolve_report_path(
+                self._resolve_report_path(base_dir, full_block.get("outdir")),
+                full_block.get("summary_path"),
+            )
+            reduced_summary_path = self._resolve_report_path(
+                self._resolve_report_path(base_dir, reduced_block.get("outdir")),
+                reduced_block.get("summary_path"),
+            )
+            summary_full = self._load_summary_data(full_summary_path, full_block or main_json)
+            summary_reduced = self._load_summary_data(reduced_summary_path, reduced_block or main_json)
+            if metrics_full is None:
+                report_full_path = self._resolve_report_path(
+                    self._resolve_report_path(base_dir, full_block.get("outdir")),
+                    full_block.get("metrics_path"),
+                )
+                if report_full_path and report_full_path.exists():
+                    metrics_full_path = report_full_path
+                    metrics_full = load_metrics_series(metrics_full_path)
+            if metrics_reduced is None:
+                report_reduced_path = self._resolve_report_path(
+                    self._resolve_report_path(base_dir, reduced_block.get("outdir")),
+                    reduced_block.get("metrics_path"),
+                )
+                if report_reduced_path and report_reduced_path.exists():
+                    metrics_reduced_path = report_reduced_path
+                    metrics_reduced = load_metrics_series(metrics_reduced_path)
+
         bundle = ReportBundle(
-            kind=infer_json_kind(main_json),
+            kind=kind,
             main_json=main_json,
             metrics=metrics_records,
             aux_jsons=aux_jsons,
         )
 
         if bundle.kind == "single":
-            self._render_single_report(bundle, metrics_records)
+            self._render_single_report(bundle, metrics_records, summary_data)
         elif bundle.kind == "compare":
-            self._render_compare_report(bundle, metrics_full, metrics_reduced)
+            self._render_compare_report(bundle, metrics_full, metrics_reduced, summary_full, summary_reduced)
         else:
             st.warning("Não foi possível identificar o tipo do JSON. Exibindo conteúdo bruto.")
             st.json(bundle.main_json)

@@ -55,6 +55,103 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
     return records
 
 
+def load_metrics_series(metrics_jsonl_path: Path | str) -> list[dict[str, Any]]:
+    """Carrega métricas de um arquivo JSONL em uma lista de registros."""
+
+    path = Path(metrics_jsonl_path)
+    return load_jsonl(path)
+
+
+def best_so_far(series: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Aplica melhor-so-far (mínimo cumulativo) em uma série de scores."""
+
+    best_value: float | None = None
+    cumulative: list[dict[str, Any]] = []
+    for item in sorted(series, key=lambda entry: entry.get("step", 0)):
+        score = item.get("score")
+        if score is None:
+            continue
+        score_val = float(score)
+        if best_value is None or score_val < best_value:
+            best_value = score_val
+        cumulative.append({"step": int(item.get("step", 0)), "score": best_value})
+    return cumulative
+
+
+def aggregate_cost(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Agrega o custo total (n_eval) acumulado a partir das métricas."""
+
+    if not records:
+        return []
+
+    def extract_step(record: dict[str, Any], idx: int) -> int:
+        for key in ("step", "generation", "gen", "iter"):
+            if record.get(key) is not None:
+                return int(record[key])
+        return idx
+
+    eval_deltas: list[tuple[int, float]] = []
+    for idx, record in enumerate(records):
+        if record.get("name") == "n_eval":
+            value = record.get("value")
+            if value is not None:
+                eval_deltas.append((extract_step(record, idx), float(value)))
+        elif "n_eval" in record and record.get("n_eval") is not None:
+            eval_deltas.append((extract_step(record, idx), float(record["n_eval"])))
+
+    if eval_deltas:
+        totals: dict[int, float] = {}
+        for step, delta in eval_deltas:
+            totals[step] = totals.get(step, 0.0) + delta
+        cumulative = []
+        running = 0.0
+        for step in sorted(totals):
+            running += totals[step]
+            cumulative.append({"step": step, "score": running})
+        return cumulative
+
+    # PT-BR: fallback quando n_eval não está presente, usamos pop_size por geração.
+    pop_size: float | None = None
+    for record in records:
+        if record.get("name") == "pop_size" and record.get("value") is not None:
+            pop_size = float(record["value"])
+            break
+        if record.get("pop_size") is not None:
+            pop_size = float(record["pop_size"])
+            break
+    if pop_size is None:
+        pop_size = 1.0
+
+    steps = sorted({extract_step(record, idx) for idx, record in enumerate(records)})
+    cumulative = []
+    running = 0.0
+    for step in steps:
+        running += pop_size
+        cumulative.append({"step": step, "score": running})
+    return cumulative
+
+
+def extract_best_scores(records: list[dict[str, Any]]) -> dict[str, float | None]:
+    """Extrai os melhores scores cheap e expensive disponíveis nas métricas."""
+
+    cheap_series, _ = metrics_series(
+        records,
+        ["best_score_cheap", "best_score", "best"],
+        aggregate="min",
+    )
+    expensive_series, _ = metrics_series(
+        records,
+        ["best_score_expensive"],
+        aggregate="min",
+    )
+    best_cheap = best_so_far(cheap_series)
+    best_expensive = best_so_far(expensive_series)
+    return {
+        "best_cheap": best_cheap[-1]["score"] if best_cheap else None,
+        "best_expensive": best_expensive[-1]["score"] if best_expensive else None,
+    }
+
+
 def infer_json_kind(obj: dict[str, Any]) -> JsonKind:
     """Infere o tipo do relatório com base em chaves conhecidas."""
 
