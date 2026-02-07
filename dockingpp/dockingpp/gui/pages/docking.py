@@ -271,7 +271,16 @@ class DockingPage(BasePage):
             index=0,
             key=StateKeys.RUN_MODE,
         )
+        search_space_mode = "global"
         top_pockets_value = None
+        if mode == "Execução única":
+            search_space_label = st.selectbox(
+                "Espaço de busca",
+                options=["Global", "Bolsões"],
+                index=0,
+                key="search_space_mode_single",
+            )
+            search_space_mode = "pockets" if search_space_label == "Bolsões" else "global"
         if mode == "Comparar (Completo vs Reduzido)":
             top_pockets_value = st.slider(
                 "Melhores bolsões (execução reduzida)",
@@ -391,6 +400,7 @@ class DockingPage(BasePage):
             total_generations = int(resolved_cfg.get("generations", 0) or 0)
 
             if mode == "Execução única":
+                resolved_cfg["search_space_mode"] = search_space_mode
                 st.write("Executando pipeline de docking...")
                 progress_bar = st.progress(0.0)
                 progress_text = st.empty()
@@ -449,12 +459,14 @@ class DockingPage(BasePage):
                     "out_dir": out_path / "full",
                     "full_search": True,
                     "top_pockets": None,
+                    "search_space_mode": "global",
                 },
                 {
                     "label": "reduced",
                     "out_dir": out_path / "reduced",
                     "full_search": False,
                     "top_pockets": top_pockets,
+                    "search_space_mode": "pockets",
                 },
             ]
             results: dict[str, dict[str, Any]] = {}
@@ -477,6 +489,7 @@ class DockingPage(BasePage):
                 run_out_dir.mkdir(parents=True, exist_ok=True)
                 run_cfg_dict = dict(resolved_cfg)
                 run_cfg_dict["full_search"] = run["full_search"]
+                run_cfg_dict["search_space_mode"] = run["search_space_mode"]
                 if run["top_pockets"] is not None:
                     run_cfg_dict["top_pockets"] = run["top_pockets"]
                 resolved_configs[run["label"]] = run_cfg_dict
@@ -595,12 +608,14 @@ class DockingPage(BasePage):
                     "summary_path": results["full"]["summary_path"],
                     "metrics_path": str(Path(results["full"]["out_dir"]) / "metrics.jsonl"),
                     "timing": results["full"]["timing"],
+                    "search_space_mode": resolved_configs["full"].get("search_space_mode"),
                 },
                 "reduced": {
                     "outdir": results["reduced"]["out_dir"],
                     "summary_path": results["reduced"]["summary_path"],
                     "metrics_path": str(Path(results["reduced"]["out_dir"]) / "metrics.jsonl"),
                     "timing": results["reduced"]["timing"],
+                    "search_space_mode": resolved_configs["reduced"].get("search_space_mode"),
                 },
                 "diff": diff_payload,
                 "config_compare": {
