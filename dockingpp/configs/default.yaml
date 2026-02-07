@@ -17,6 +17,12 @@ pockets_path: null
 pocket_mode: "global"
 pocket_margin: 2.0
 
+pocket_rank_weights:
+  w_size: 1.0
+  w_compact: 1.0
+  w_depth: 0.5
+  w_proximity: 0.5
+
 cheap_weights:
   w_contacts: 1.0
   w_clashes: 1.5
