@@ -10,7 +10,7 @@ from dockingpp.gui.services.progress_service import (
     format_progress_text,
     read_last_metrics_generation,
 )
-from dockingpp.gui.services.report_service import metrics_series
+from dockingpp.gui.services.report_service import best_so_far, metrics_series
 
 
 def test_series_remove_serrilhado_com_steps_duplicados() -> None:
@@ -30,8 +30,8 @@ def test_series_remove_serrilhado_com_steps_duplicados() -> None:
     assert len(steps) == len(set(steps))
 
 
-def test_convergencia_best_so_far_eh_monotona_nao_crescente() -> None:
-    """Valida que o melhor-so-far é monotônico (não crescente)."""
+def test_convergencia_best_so_far_eh_monotona_nao_decrescente() -> None:
+    """Valida que o melhor-so-far é monotônico (não decrescente)."""
 
     records = [
         {"name": "best_score", "value": 5.0, "step": 0},
@@ -42,8 +42,23 @@ def test_convergencia_best_so_far_eh_monotona_nao_crescente() -> None:
     series, _ = metrics_series(records, ["best_score"], aggregate="min", cumulative_best=True)
     scores = [item["score"] for item in series]
 
-    # PT-BR: o best-so-far deve apenas diminuir ou permanecer igual.
-    assert all(scores[idx] >= scores[idx + 1] for idx in range(len(scores) - 1))
+    # PT-BR: o best-so-far deve apenas aumentar ou permanecer igual.
+    assert all(scores[idx] <= scores[idx + 1] for idx in range(len(scores) - 1))
+
+
+def test_best_so_far_cummax_exemplo_simples() -> None:
+    """Confere o cummax para uma sequência simples."""
+
+    series = [
+        {"step": 0, "score": 10},
+        {"step": 1, "score": 12},
+        {"step": 2, "score": 11},
+        {"step": 3, "score": 15},
+    ]
+
+    cumulative = best_so_far(series, mode="max")
+
+    assert [item["score"] for item in cumulative] == [10, 12, 12, 15]
 
 
 def test_progresso_nao_extrapola_total_de_geracoes(tmp_path: Path) -> None:

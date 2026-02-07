@@ -8,6 +8,16 @@ from pathlib import Path
 from typing import Any, Iterable, Literal
 
 JsonKind = Literal["compare", "single", "unknown"]
+CumulativeMode = Literal["min", "max"]
+
+CUMULATIVE_BEST_BY_KEY: dict[str, CumulativeMode] = {
+    "best_score": "max",
+    "best_score_cheap": "max",
+    "best_score_expensive": "max",
+    "best": "max",
+    "mean_score": "max",
+    "n_clashes": "min",
+}
 
 
 @dataclass(frozen=True)
@@ -62,8 +72,8 @@ def load_metrics_series(metrics_jsonl_path: Path | str) -> list[dict[str, Any]]:
     return load_jsonl(path)
 
 
-def best_so_far(series: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Aplica melhor-so-far (mínimo cumulativo) em uma série de scores."""
+def best_so_far(series: list[dict[str, Any]], mode: CumulativeMode = "min") -> list[dict[str, Any]]:
+    """Aplica melhor-so-far (cumulativo) em uma série de scores."""
 
     best_value: float | None = None
     cumulative: list[dict[str, Any]] = []
@@ -72,7 +82,11 @@ def best_so_far(series: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if score is None:
             continue
         score_val = float(score)
-        if best_value is None or score_val < best_value:
+        if best_value is None:
+            best_value = score_val
+        elif mode == "min" and score_val < best_value:
+            best_value = score_val
+        elif mode == "max" and score_val > best_value:
             best_value = score_val
         cumulative.append({"step": int(item.get("step", 0)), "score": best_value})
     return cumulative
@@ -136,7 +150,7 @@ def extract_best_scores(records: list[dict[str, Any]]) -> dict[str, float | None
 
     cheap_series, _ = metrics_series(
         records,
-        ["best_score_cheap", "best_score", "best"],
+        ["best_score", "best_score_cheap", "best"],
         aggregate="min",
     )
     expensive_series, _ = metrics_series(
@@ -144,8 +158,8 @@ def extract_best_scores(records: list[dict[str, Any]]) -> dict[str, float | None
         ["best_score_expensive"],
         aggregate="min",
     )
-    best_cheap = best_so_far(cheap_series)
-    best_expensive = best_so_far(expensive_series)
+    best_cheap = best_so_far(cheap_series, mode="max")
+    best_expensive = best_so_far(expensive_series, mode="max")
     return {
         "best_cheap": best_cheap[-1]["score"] if best_cheap else None,
         "best_expensive": best_expensive[-1]["score"] if best_expensive else None,
@@ -208,21 +222,41 @@ def _aggregate_series_min(series: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{"step": step, "score": min_by_step[step]} for step in sorted(min_by_step)]
 
 
-def _apply_cumulative_min(series: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Aplica o melhor-so-far por mínimo cumulativo, garantindo monotonicidade."""
+def _apply_cumulative_best(
+    series: list[dict[str, Any]],
+    mode: CumulativeMode,
+) -> list[dict[str, Any]]:
+    """Aplica o melhor-so-far cumulativo, garantindo monotonicidade."""
 
-    best_so_far: float | None = None
+    best_value: float | None = None
     cumulative: list[dict[str, Any]] = []
     for item in series:
         score = item.get("score")
         if score is None:
             continue
         score_val = float(score)
-        if best_so_far is None or score_val < best_so_far:
-            best_so_far = score_val
-        # PT-BR: garantimos séries não-crescentes (melhor = menor score).
-        cumulative.append({"step": int(item["step"]), "score": best_so_far})
+        if best_value is None:
+            best_value = score_val
+        elif mode == "min" and score_val < best_value:
+            best_value = score_val
+        elif mode == "max" and score_val > best_value:
+            best_value = score_val
+        # PT-BR: garantimos monotonicidade conforme a direção escolhida.
+        cumulative.append({"step": int(item["step"]), "score": best_value})
     return cumulative
+
+
+def _resolve_cumulative_mode(
+    selected_key: str | None,
+    cumulative_best: bool | CumulativeMode,
+) -> CumulativeMode | None:
+    if not cumulative_best:
+        return None
+    if isinstance(cumulative_best, str):
+        return cumulative_best
+    if selected_key and selected_key in CUMULATIVE_BEST_BY_KEY:
+        return CUMULATIVE_BEST_BY_KEY[selected_key]
+    return "min"
 
 
 def metrics_series(
@@ -230,7 +264,7 @@ def metrics_series(
     keys: list[str],
     step_keys: list[str] | None = None,
     aggregate: Literal["min"] | None = None,
-    cumulative_best: bool = False,
+    cumulative_best: bool | CumulativeMode = False,
 ) -> tuple[list[dict[str, Any]], str | None]:
     """Monta uma série para gráficos a partir de registros de métricas."""
 
@@ -252,8 +286,9 @@ def metrics_series(
             series.append({"step": step, "score": record.get("value")})
         if aggregate == "min":
             series = _aggregate_series_min(series)
-        if cumulative_best:
-            series = _apply_cumulative_min(series)
+        cumulative_mode = _resolve_cumulative_mode(selected_key, cumulative_best)
+        if cumulative_mode:
+            series = _apply_cumulative_best(series, cumulative_mode)
         return series, selected_key
 
     selected_key = next((key for key in keys if any(key in rec for rec in records)), None)
@@ -269,8 +304,9 @@ def metrics_series(
         series.append({"step": step, "score": record.get(selected_key)})
     if aggregate == "min":
         series = _aggregate_series_min(series)
-    if cumulative_best:
-        series = _apply_cumulative_min(series)
+    cumulative_mode = _resolve_cumulative_mode(selected_key, cumulative_best)
+    if cumulative_mode:
+        series = _apply_cumulative_best(series, cumulative_mode)
     return series, selected_key
 
 
