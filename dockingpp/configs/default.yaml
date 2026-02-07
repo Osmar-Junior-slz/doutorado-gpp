@@ -30,3 +30,9 @@ cheap_weights:
 
 expensive_every: 0
 expensive_topk: 2
+
+expensive:
+  contact_cutoff: 4.0
+  clash_cutoff: 2.0
+  w_att: 1.0
+  w_rep: 3.0
