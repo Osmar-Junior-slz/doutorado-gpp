@@ -346,18 +346,18 @@ class ReportsPage(BasePage):
         # PT-BR: agregamos por step e aplicamos melhor-so-far para evitar serrilhado.
         best_series, _ = metrics_series(
             metrics_records,
-            ["best_score_cheap", "best_score", "best"],
+            ["best_score", "best_score_cheap", "best"],
             aggregate="min",
         )
         if best_series:
-            best_series = best_so_far(best_series)
+            best_series = best_so_far(best_series, mode="max")
             fig = self._plot_line(
                 best_series,
                 "step",
                 "score",
-                "Best score (cheap) vs step",
+                "Best score vs step",
                 "Step",
-                "Best score (cheap)",
+                "Best score",
             )
             st.pyplot(fig)
             plt.close(fig)
@@ -375,7 +375,7 @@ class ReportsPage(BasePage):
             lines = [paired_series]
             labels = ["Cheap"]
             if best_expensive_series:
-                best_expensive_series = best_so_far(best_expensive_series)
+                best_expensive_series = best_so_far(best_expensive_series, mode="max")
                 paired_expensive = self._pair_best_vs_cost(best_expensive_series, cost_series)
                 if paired_expensive:
                     lines.append(paired_expensive)
@@ -444,23 +444,23 @@ class ReportsPage(BasePage):
         st.subheader("Convergência (Full vs Reduced)")
         full_best, _ = metrics_series(
             metrics_full,
-            ["best_score_cheap", "best_score", "best"],
+            ["best_score", "best_score_cheap", "best"],
             aggregate="min",
         )
         reduced_best, _ = metrics_series(
             metrics_reduced,
-            ["best_score_cheap", "best_score", "best"],
+            ["best_score", "best_score_cheap", "best"],
             aggregate="min",
         )
         if full_best and reduced_best:
-            full_best = best_so_far(full_best)
-            reduced_best = best_so_far(reduced_best)
+            full_best = best_so_far(full_best, mode="max")
+            reduced_best = best_so_far(reduced_best, mode="max")
             fig = self._plot_multi_line(
                 [full_best, reduced_best],
                 ["Completo", "Reduzido"],
-                "Best score (cheap) vs step",
+                "Best score vs step",
                 "Step",
-                "Best score (cheap)",
+                "Best score",
             )
             st.pyplot(fig)
             plt.close(fig)
