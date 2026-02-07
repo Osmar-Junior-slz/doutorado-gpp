@@ -501,8 +501,15 @@ class DockingPage(BasePage):
 
                 metrics_path = run_out_dir / "metrics.jsonl"
                 metrics = summarize_metrics(load_jsonl(metrics_path))
+                summary_path = run_out_dir / "summary.json"
+                summary_data: dict[str, Any] = {}
+                if summary_path.exists():
+                    summary_data = json.loads(summary_path.read_text(encoding="utf-8"))
                 results[run["label"]] = {
                     "out_dir": str(run_out_dir),
+                    "summary_path": str(summary_path),
+                    "summary": summary_data,
+                    "timing": {"total_s": elapsed},
                     "params": {
                         "full_search": run["full_search"],
                         "top_pockets": run["top_pockets"],
@@ -547,13 +554,63 @@ class DockingPage(BasePage):
                     st.subheader(f"Métricas da execução {label_name.lower()}")
                     st.line_chart(series, x="step", y="score")
 
+            full_summary = results["full"].get("summary", {})
+            reduced_summary = results["reduced"].get("summary", {})
+            full_best_cheap = full_summary.get("best_score_cheap", results["full"]["best_score_cheap"])
+            reduced_best_cheap = reduced_summary.get("best_score_cheap", results["reduced"]["best_score_cheap"])
+            full_best_expensive = full_summary.get("best_score_expensive")
+            reduced_best_expensive = reduced_summary.get("best_score_expensive")
+            full_total_s = results["full"]["timing"]["total_s"]
+            reduced_total_s = results["reduced"]["timing"]["total_s"]
+            full_expensive_ran = full_summary.get("expensive_ran_count")
+            reduced_expensive_ran = reduced_summary.get("expensive_ran_count")
+
+            diff_payload = {
+                "delta_best_cheap": (
+                    float(reduced_best_cheap) - float(full_best_cheap)
+                    if reduced_best_cheap is not None and full_best_cheap is not None
+                    else None
+                ),
+                "delta_best_expensive": (
+                    float(reduced_best_expensive) - float(full_best_expensive)
+                    if reduced_best_expensive is not None and full_best_expensive is not None
+                    else None
+                ),
+                "speedup_total_s": (
+                    float(full_total_s) / float(reduced_total_s)
+                    if full_total_s and reduced_total_s
+                    else None
+                ),
+                "expensive_calls_ratio": (
+                    float(reduced_expensive_ran) / float(full_expensive_ran)
+                    if reduced_expensive_ran is not None and full_expensive_ran
+                    else None
+                ),
+            }
+
             report = {
-                "parameters": {
-                    "output_root": str(out_path),
-                    "top_pockets": top_pockets,
+                "mode": "compare",
+                "full": {
+                    "outdir": results["full"]["out_dir"],
+                    "summary_path": results["full"]["summary_path"],
+                    "metrics_path": str(Path(results["full"]["out_dir"]) / "metrics.jsonl"),
+                    "timing": results["full"]["timing"],
                 },
-                "full": results["full"],
-                "reduced": results["reduced"],
+                "reduced": {
+                    "outdir": results["reduced"]["out_dir"],
+                    "summary_path": results["reduced"]["summary_path"],
+                    "metrics_path": str(Path(results["reduced"]["out_dir"]) / "metrics.jsonl"),
+                    "timing": results["reduced"]["timing"],
+                },
+                "diff": diff_payload,
+                "config_compare": {
+                    "generations": resolved_cfg.get("generations"),
+                    "pop_size": resolved_cfg.get("pop_size"),
+                    "top_pockets": top_pockets,
+                    "full_search": True,
+                    "expensive_every": resolved_cfg.get("expensive_every"),
+                    "expensive_topk": resolved_cfg.get("expensive_topk"),
+                },
             }
             report_path = out_path / "report.json"
             report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")

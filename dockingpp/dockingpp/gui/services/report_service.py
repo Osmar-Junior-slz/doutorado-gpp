@@ -187,7 +187,19 @@ def _extract_compare_block(report_data: dict[str, Any], label: str) -> dict[str,
     return None
 
 
-def _lookup_metric(block: dict[str, Any], keys: Iterable[str]) -> Any:
+def _load_summary(block: dict[str, Any]) -> dict[str, Any] | None:
+    """Carrega o summary.json a partir de summary_path quando disponível."""
+
+    summary_path = block.get("summary_path")
+    if not summary_path:
+        return None
+    try:
+        return load_json(Path(summary_path))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return None
+
+
+def _lookup_metric(block: dict[str, Any], keys: Iterable[str], summary: dict[str, Any] | None = None) -> Any:
     """Procura um valor de métrica em um bloco, considerando chaves alternativas."""
 
     for key in keys:
@@ -198,6 +210,15 @@ def _lookup_metric(block: dict[str, Any], keys: Iterable[str]) -> Any:
         for key in keys:
             if key in metrics and metrics[key] is not None:
                 return metrics[key]
+    timing = block.get("timing")
+    if isinstance(timing, dict):
+        for key in keys:
+            if key in timing and timing[key] is not None:
+                return timing[key]
+    if summary:
+        for key in keys:
+            if key in summary and summary[key] is not None:
+                return summary[key]
     return None
 
 
@@ -209,17 +230,49 @@ def build_compare_table(report_data: dict[str, Any]) -> list[dict[str, Any]]:
         block = _extract_compare_block(report_data, label)
         if not block:
             continue
+        summary = _load_summary(block)
         label_name = "Completo" if label == "full" else "Reduzido"
+        pockets_total = _lookup_metric(
+            block,
+            ["n_pockets_total", "pockets_total", "n_pockets_detected"],
+            summary,
+        )
+        pockets_used = _lookup_metric(
+            block,
+            ["n_pockets_used", "pockets_used"],
+            summary,
+        )
+        reduction_ratio = _lookup_metric(block, ["reduction_ratio", "ratio"], summary)
+        if reduction_ratio is None and pockets_total:
+            try:
+                total_val = float(pockets_total)
+                used_val = float(pockets_used) if pockets_used is not None else None
+                if used_val is not None and total_val:
+                    reduction_ratio = used_val / total_val
+            except (TypeError, ValueError):
+                reduction_ratio = None
         # PT-BR: usamos chaves alternativas para compatibilidade retroativa.
         rows.append(
             {
                 "Modo": label_name,
-                "Melhor score (cheap)": _lookup_metric(block, ["best_score_cheap", "best_score", "best"]),
-                "Avaliações": _lookup_metric(block, ["n_eval", "evals", "evaluations"]),
-                "Bolsões totais": _lookup_metric(block, ["n_pockets_total", "pockets_total"]),
-                "Bolsões usados": _lookup_metric(block, ["n_pockets_used", "pockets_used"]),
-                "Razão de redução": _lookup_metric(block, ["reduction_ratio", "ratio"]),
-                "Tempo (s)": _lookup_metric(block, ["elapsed_s", "elapsed_seconds", "elapsed"]),
+                "Melhor score (cheap)": _lookup_metric(
+                    block,
+                    ["best_score_cheap", "best_score", "best"],
+                    summary,
+                ),
+                "Avaliações": _lookup_metric(
+                    block,
+                    ["n_eval", "n_eval_total", "evals", "evaluations"],
+                    summary,
+                ),
+                "Bolsões totais": pockets_total,
+                "Bolsões usados": pockets_used,
+                "Razão de redução": reduction_ratio,
+                "Tempo (s)": _lookup_metric(
+                    block,
+                    ["elapsed_s", "elapsed_seconds", "elapsed", "total_s"],
+                    summary,
+                ),
             }
         )
     return rows
