@@ -49,25 +49,32 @@ def _extract_coords(source: Any) -> np.ndarray:
     return np.asarray(coords, dtype=float)
 
 
-def _log_expensive_event(cfg: Any, name: str, pose: Pose, reason: str | None = None) -> None:
+def _log_expensive_event(
+    cfg: Any,
+    name: str,
+    pose: Pose,
+    reason: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> None:
     logger = getattr(cfg, "expensive_logger", None) or getattr(cfg, "logger", None)
     if logger is None:
         return
     step = int(getattr(cfg, "expensive_step", 0) or 0)
-    extra = {}
+    extra_payload: dict[str, Any] = dict(extra or {})
     if reason is not None:
-        extra["reason"] = reason
+        extra_payload["reason"] = reason
     generation = pose.meta.get("generation")
     if generation is not None:
-        extra["generation"] = generation
-    if extra:
-        logger.log_metric(name, 1.0, step=step, extra=extra)
+        extra_payload["generation"] = generation
+    if extra_payload:
+        logger.log_metric(name, 1.0, step=step, extra=extra_payload)
     else:
         logger.log_metric(name, 1.0, step=step)
 
 
-def _log_expensive_skip(cfg: Any, pose: Pose, reason: str) -> None:
-    _log_expensive_event(cfg, "expensive_skipped", pose, reason=reason)
+def _log_expensive_skip(cfg: Any, pose: Pose, reason: str, error: str | None = None) -> None:
+    extra = {"error": error} if error else None
+    _log_expensive_event(cfg, "expensive_skipped", pose, reason=reason, extra=extra)
 
 
 def _score_pose_expensive_impl(pose: Pose, receptor: Any, peptide: Any, cfg: Any) -> float:
@@ -122,6 +129,9 @@ def score_pose_expensive(
         score = _score_pose_expensive_impl(pose, receptor, peptide, cfg)
     except NotImplementedError:
         _log_expensive_skip(cfg, pose, reason="not_implemented")
+        return None
+    except Exception as exc:
+        _log_expensive_skip(cfg, pose, reason="exception", error=type(exc).__name__)
         return None
     _log_expensive_event(cfg, "expensive_ran", pose)
     return score
