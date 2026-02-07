@@ -29,7 +29,7 @@ cheap_weights:
   w_geom: 0.1
 
 expensive_every: 0
-expensive_topk: 2
+expensive_topk: null
 
 expensive:
   contact_cutoff: 4.0

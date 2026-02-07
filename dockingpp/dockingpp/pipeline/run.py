@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 from pydantic import BaseModel, Field
@@ -36,7 +36,7 @@ class Config(BaseModel):
     top_frac_sw: float = 0.2
     cheap_weights: Dict[str, float] = Field(default_factory=dict)
     expensive_every: int = 0
-    expensive_topk: int = 0
+    expensive_topk: Optional[int] = None
     top_pockets: int = 3
     full_search: bool = True
     max_pockets_used: int = 8
