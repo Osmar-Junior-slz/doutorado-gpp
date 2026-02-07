@@ -14,6 +14,7 @@ top_pockets: 3
 full_search: true
 max_pockets_used: 8
 pockets_path: null
+search_space_mode: "global"
 pocket_mode: "global"
 pocket_margin: 2.0
 

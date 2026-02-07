@@ -42,6 +42,7 @@ class Config(BaseModel):
     top_pockets: int = 3
     full_search: bool = True
     max_pockets_used: int = 8
+    search_space_mode: str = "global"
 
     class Config:
         extra = "allow"
@@ -73,6 +74,37 @@ def _dummy_inputs() -> tuple[Any, Any, list[Pocket]]:
     return receptor, {"dummy": True}, pockets
 
 
+def _extract_coords(receptor: Any) -> np.ndarray:
+    if isinstance(receptor, dict) and "coords" in receptor:
+        return np.asarray(receptor["coords"], dtype=float)
+    if isinstance(receptor, np.ndarray):
+        return np.asarray(receptor, dtype=float)
+    coords = getattr(receptor, "coords", None)
+    if coords is None:
+        return np.zeros((0, 3), dtype=float)
+    return np.asarray(coords, dtype=float)
+
+
+def _build_global_pocket(receptor: Any, cfg: Config) -> Pocket:
+    coords = _extract_coords(receptor)
+    if coords.size:
+        center = coords.mean(axis=0)
+        deltas = coords - center.reshape(1, 3)
+        max_dist = float(np.max(np.linalg.norm(deltas, axis=1)))
+    else:
+        center = np.zeros(3, dtype=float)
+        max_dist = 0.0
+    pocket_margin = float(getattr(cfg, "pocket_margin", 2.0))
+    radius = max_dist + pocket_margin
+    return Pocket(
+        id="global",
+        center=center,
+        radius=radius,
+        coords=coords,
+        meta={"coords": coords},
+    )
+
+
 def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: str) -> RunResult:
     """Executa o pipeline de docking."""
 
@@ -82,47 +114,54 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
     # do metrics.jsonl, evitando que a UI só veja progresso no final.
     os.makedirs(out_dir, exist_ok=True)
     if receptor_path == "__dummy__" and peptide_path == "__dummy__":
-        receptor, peptide, pockets = _dummy_inputs()
+        receptor, peptide, dummy_pockets = _dummy_inputs()
     else:
         receptor = load_receptor(receptor_path)
         peptide = load_peptide(peptide_path)
-        pockets = load_pockets(
-            receptor,
-            cfg=cfg,
-            pockets_path=getattr(cfg, "pockets_path", None),
-        )
+        dummy_pockets = []
 
     # PT-BR: live_write=True garante métricas disponíveis durante a execução.
     # As métricas por geração incluem "generation" (0..N) para a UI calcular
     # progresso correto; o "step" permanece como contador global para séries.
     logger = RunLogger(out_dir=out_dir, live_write=True)
     cfg.expensive_logger = logger
-    total_pockets = len(pockets)
-    ranked = rank_pockets(receptor, pockets, peptide=peptide)
-    if not ranked:
-        global_pockets = [pocket for pocket in pockets if getattr(pocket, "id", None) == "global"]
-        pockets = global_pockets or pockets
-    elif not getattr(cfg, "full_search", True):
-        # PT-BR: o erro anterior ocorria quando o "reduced" ainda varria todos
-        # os pockets na busca. Aqui limitamos explicitamente aos top_pockets,
-        # garantindo que o espaço de busca seja reduzido de fato.
-        top_pockets = int(getattr(cfg, "top_pockets", len(ranked)) or 0)
-        if top_pockets <= 0:
-            pockets = [pocket for pocket, _ in ranked]
-        elif total_pockets > top_pockets:
-            pockets = [pocket for pocket, _ in ranked[:top_pockets]]
-        else:
-            pockets = [pocket for pocket, _ in ranked]
+    search_space_mode = getattr(cfg, "search_space_mode", "global")
+    if search_space_mode == "global":
+        pockets = [_build_global_pocket(receptor, cfg)]
+        total_pockets = 1
+        selected_pockets = 1
     else:
-        max_pockets_used = int(getattr(cfg, "max_pockets_used", 8) or 0)
-        if max_pockets_used <= 0:
-            max_pockets_used = len(ranked)
-        pockets = [pocket for pocket, _ in ranked[:max_pockets_used]]
+        pockets = dummy_pockets or load_pockets(
+            receptor,
+            cfg=cfg,
+            pockets_path=getattr(cfg, "pockets_path", None),
+        )
+        total_pockets = len(pockets)
+        ranked = rank_pockets(receptor, pockets, peptide=peptide)
+        if not ranked:
+            global_pockets = [pocket for pocket in pockets if getattr(pocket, "id", None) == "global"]
+            pockets = global_pockets or pockets
+        elif not getattr(cfg, "full_search", True):
+            # PT-BR: o erro anterior ocorria quando o "reduced" ainda varria todos
+            # os pockets na busca. Aqui limitamos explicitamente aos top_pockets,
+            # garantindo que o espaço de busca seja reduzido de fato.
+            top_pockets = int(getattr(cfg, "top_pockets", len(ranked)) or 0)
+            if top_pockets <= 0:
+                pockets = [pocket for pocket, _ in ranked]
+            elif total_pockets > top_pockets:
+                pockets = [pocket for pocket, _ in ranked[:top_pockets]]
+            else:
+                pockets = [pocket for pocket, _ in ranked]
+        else:
+            max_pockets_used = int(getattr(cfg, "max_pockets_used", 8) or 0)
+            if max_pockets_used <= 0:
+                max_pockets_used = len(ranked)
+            pockets = [pocket for pocket, _ in ranked[:max_pockets_used]]
+        selected_pockets = len(pockets)
 
     # PT-BR: métricas globais de seleção. "n_pockets_total" é o total detectado,
     # "n_pockets_used" é quantos realmente foram passados para a busca, e
     # "reduction_ratio" = 1 - used/total (deve ser > 0 no modo reduced).
-    selected_pockets = len(pockets)
     logger.log_metric("total_pockets", float(total_pockets), step=0)
     logger.log_metric("selected_pockets", float(selected_pockets), step=0)
     logger.log_global_metrics(total_pockets, selected_pockets)
@@ -150,6 +189,7 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
         "generations": cfg.generations,
         "pop_size": cfg.pop_size,
         "topk": cfg.topk,
+        "search_space_mode": search_space_mode,
         "full_search": bool(getattr(cfg, "full_search", True)),
         "top_pockets": int(getattr(cfg, "top_pockets", 0) or 0),
         "max_pockets_used": int(getattr(cfg, "max_pockets_used", 0) or 0),
@@ -167,6 +207,7 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
             "best_pose_id": best_pose_id,
             "n_pockets_detected": total_pockets,
             "n_pockets_used": selected_pockets,
+            "search_space_mode": search_space_mode,
             "config_resolved_subset": config_resolved_subset,
             "timing": {
                 "total_s": end_total - start_total,
@@ -268,6 +309,7 @@ def _write_summary(
         "mode": mode,
         "n_pockets_detected": total_pockets,
         "n_pockets_used": selected_pockets,
+        "search_space_mode": config_resolved_subset.get("search_space_mode"),
         "best_score_cheap": best_score_cheap,
         "best_score_expensive": best_score_expensive,
         "expensive_ran_count": int(expensive_ran),
