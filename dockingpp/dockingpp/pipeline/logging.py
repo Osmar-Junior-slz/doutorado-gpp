@@ -29,9 +29,21 @@ class RunLogger:
         extra "generation" com a geração local [0..N], evitando valores > N na UI.
         """
 
-        payload = {"name": name, "value": value, "step": step}
-        if extra:
-            payload.update(extra)
+        extras: Dict[str, Any] = dict(extra or {})
+        generation = extras.get("generation")
+        pocket_index = extras.get("pocket_index")
+        payload: Dict[str, Any] = {
+            "step": int(step),
+            "pocket_index": int(pocket_index) if pocket_index is not None else None,
+            "generation": int(generation) if generation is not None else None,
+            "name": name,
+            "value": float(value) if value is not None else None,
+        }
+        if extras:
+            payload["extras"] = extras
+            for key, val in extras.items():
+                if key not in payload:
+                    payload[key] = val
         self.records.append(payload)
         self._append_record(payload)
 

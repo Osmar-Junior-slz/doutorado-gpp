@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import time
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -74,6 +76,7 @@ def _dummy_inputs() -> tuple[Any, Any, list[Pocket]]:
 def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: str) -> RunResult:
     """Executa o pipeline de docking."""
 
+    start_total = time.perf_counter()
     np.random.seed(cfg.seed)
     # PT-BR: criamos o diretório antes do logger para permitir escrita incremental
     # do metrics.jsonl, evitando que a UI só veja progresso no final.
@@ -127,6 +130,7 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
     prior_pocket = PriorNetPocket()
     prior_pose = PriorNetPose()
 
+    start_search = time.perf_counter()
     result = search.search(
         receptor=receptor,
         peptide=peptide,
@@ -138,20 +142,37 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
         prior_pose=prior_pose,
         logger=logger,
     )
+    end_search = time.perf_counter()
+    end_total = time.perf_counter()
+
+    config_resolved_subset = {
+        "seed": cfg.seed,
+        "generations": cfg.generations,
+        "pop_size": cfg.pop_size,
+        "topk": cfg.topk,
+        "full_search": bool(getattr(cfg, "full_search", True)),
+        "top_pockets": int(getattr(cfg, "top_pockets", 0) or 0),
+        "max_pockets_used": int(getattr(cfg, "max_pockets_used", 0) or 0),
+        "expensive_every": int(getattr(cfg, "expensive_every", 0) or 0),
+        "expensive_topk": getattr(cfg, "expensive_topk", None),
+    }
+    best_pose_id = result.best_pose.meta.get("pose_id") or result.best_pose.meta.get("id")
 
     result_path = os.path.join(out_dir, "result.json")
     with open(result_path, "w", encoding="utf-8") as handle:
         payload = {
+            "mode": "single",
             "best_score_cheap": result.best_pose.score_cheap,
             "best_score_expensive": result.best_pose.score_expensive,
-            "generation": result.best_pose.meta.get("generation"),
-            "config": {
-                "seed": cfg.seed,
-                "generations": cfg.generations,
-                "pop_size": cfg.pop_size,
-                "topk": cfg.topk,
-                "max_trans": cfg.max_trans,
-                "max_rot_deg": cfg.max_rot_deg,
+            "best_pose_id": best_pose_id,
+            "n_pockets_detected": total_pockets,
+            "n_pockets_used": selected_pockets,
+            "config_resolved_subset": config_resolved_subset,
+            "timing": {
+                "total_s": end_total - start_total,
+                "scoring_cheap_s": None,
+                "scoring_expensive_s": None,
+                "search_s": end_search - start_search,
             },
         }
         handle.write(json.dumps(payload, indent=2))
@@ -159,4 +180,103 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
     logger.flush(out_dir)
     mode_label = "full" if getattr(cfg, "full_search", True) else "reduced"
     logger.flush_timeseries(out_dir, mode=mode_label)
+    _write_summary(
+        out_dir=out_dir,
+        run_id=datetime.utcnow().isoformat() + "Z",
+        mode="single",
+        total_pockets=total_pockets,
+        selected_pockets=selected_pockets,
+        best_score_cheap=result.best_pose.score_cheap,
+        best_score_expensive=result.best_pose.score_expensive,
+        best_pose_pocket_id=result.best_pose.meta.get("pocket_id"),
+        config_resolved_subset=config_resolved_subset,
+        records=logger.records,
+        pockets=pockets,
+    )
     return result
+
+
+def _safe_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _record_field(record: Dict[str, Any], key: str) -> Any:
+    if key in record:
+        return record.get(key)
+    extras = record.get("extras")
+    if isinstance(extras, dict):
+        return extras.get(key)
+    return None
+
+
+def _write_summary(
+    out_dir: str,
+    run_id: str,
+    mode: str,
+    total_pockets: int,
+    selected_pockets: int,
+    best_score_cheap: float | None,
+    best_score_expensive: float | None,
+    best_pose_pocket_id: str | None,
+    config_resolved_subset: dict[str, Any],
+    records: list[dict[str, Any]],
+    pockets: list[Pocket],
+) -> None:
+    expensive_ran = 0.0
+    expensive_skipped = 0.0
+    n_eval_total = 0.0
+    best_by_pocket: dict[int, float] = {}
+
+    for record in records:
+        name = record.get("name")
+        value = _safe_float(record.get("value"))
+        if name == "expensive_ran" and value is not None:
+            expensive_ran += value
+        elif name == "expensive_skipped" and value is not None:
+            expensive_skipped += value
+        elif name == "n_eval" and value is not None:
+            n_eval_total += value
+        elif name == "best_score" and value is not None:
+            pocket_index = _record_field(record, "pocket_index")
+            if pocket_index is None:
+                continue
+            pocket_idx = int(pocket_index)
+            current = best_by_pocket.get(pocket_idx)
+            if current is None or value > current:
+                best_by_pocket[pocket_idx] = value
+
+    best_cheap_by_pocket = []
+    for pocket_idx in sorted(best_by_pocket):
+        pocket_id = pockets[pocket_idx].id if pocket_idx < len(pockets) else str(pocket_idx)
+        best_cheap_by_pocket.append(
+            {"pocket_id": pocket_id, "best_score_cheap": best_by_pocket[pocket_idx]}
+        )
+
+    best_expensive_by_pocket = []
+    if best_score_expensive is not None and best_pose_pocket_id is not None:
+        best_expensive_by_pocket.append(
+            {"pocket_id": best_pose_pocket_id, "best_score_expensive": best_score_expensive}
+        )
+
+    summary_payload = {
+        "run_id": run_id,
+        "mode": mode,
+        "n_pockets_detected": total_pockets,
+        "n_pockets_used": selected_pockets,
+        "best_score_cheap": best_score_cheap,
+        "best_score_expensive": best_score_expensive,
+        "expensive_ran_count": int(expensive_ran),
+        "expensive_skipped_count": int(expensive_skipped),
+        "n_eval_total": n_eval_total,
+        "best_cheap_by_pocket": best_cheap_by_pocket,
+        "best_expensive_by_pocket": best_expensive_by_pocket,
+        "config_resolved_subset": config_resolved_subset,
+    }
+    summary_path = os.path.join(out_dir, "summary.json")
+    with open(summary_path, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(summary_payload, indent=2))
