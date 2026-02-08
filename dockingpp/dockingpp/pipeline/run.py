@@ -118,7 +118,7 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
     # do metrics.jsonl, evitando que a UI só veja progresso no final.
     os.makedirs(out_dir, exist_ok=True)
     debug_log_enabled = bool(getattr(cfg, "debug_log_enabled", False))
-    debug_log_path = getattr(cfg, "debug_log_path", None) or os.path.join(out_dir, "debug.jsonl")
+    debug_log_path = getattr(cfg, "debug_log_path", None) or os.path.join(out_dir, "debug", "debug.jsonl")
     debug_log_level = str(getattr(cfg, "debug_log_level", "INFO"))
     debug_logger = DebugLogger(enabled=debug_log_enabled, path=debug_log_path, level=debug_log_level)
     debug_logger.run_id = datetime.utcnow().isoformat() + "Z"

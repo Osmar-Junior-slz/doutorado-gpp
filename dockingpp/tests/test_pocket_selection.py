@@ -13,7 +13,7 @@ def _make_pockets(count):
     ]
 
 
-def _fake_rank_pockets(receptor, pockets, peptide=None):
+def _fake_rank_pockets(receptor, pockets, peptide=None, **_kwargs):
     return [(pocket, float(idx)) for idx, pocket in enumerate(pockets)]
 
 

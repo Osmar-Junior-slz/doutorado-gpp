@@ -58,6 +58,27 @@ def test_pipeline_pocket_reduction(tmp_path):
     assert reduction_ratio > 0
 
 
+def test_pipeline_debug_log_defaults(tmp_path):
+    cfg_data = load_config("configs/default.yaml")
+    out_dir = tmp_path / "out_debug"
+    debug_path = out_dir / "debug" / "debug.jsonl"
+
+    cfg_disabled = Config(**cfg_data)
+    cfg_disabled.debug_log_enabled = False
+    cfg_disabled.debug_log_path = None
+    run_pipeline(cfg_disabled, "__dummy__", "__dummy__", str(out_dir))
+
+    assert not debug_path.exists()
+
+    cfg_enabled = Config(**cfg_data)
+    cfg_enabled.debug_log_enabled = True
+    cfg_enabled.debug_log_path = None
+    run_pipeline(cfg_enabled, "__dummy__", "__dummy__", str(out_dir))
+
+    assert debug_path.exists()
+    assert debug_path.is_file()
+
+
 def test_load_pockets_dummy_global():
     receptor = load_receptor("__dummy__")
     peptide = load_peptide("__dummy__")
