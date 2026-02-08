@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+import tempfile
 
-import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 
@@ -14,18 +14,19 @@ from dockingpp.gui.pages.base import BasePage
 from dockingpp.gui.services.dialog_service import choose_directory
 from dockingpp.gui.services.report_service import (
     ReportBundle,
-    aggregate_cost,
-    best_so_far,
     build_compare_table,
-    extract_best_scores,
     infer_json_kind,
-    load_json,
-    load_jsonl,
-    load_metrics_series,
-    metrics_series,
 )
 from dockingpp.gui.state import AppState, StateKeys
 from dockingpp.gui.ui.components import download_json_button
+from dockingpp.reporting.loaders import extract_series, find_matching_jsonl, load_any_json, load_jsonl
+from dockingpp.reporting.plots import (
+    plot_cost_quality,
+    plot_filter_distribution,
+    plot_omega_reduction,
+    plot_pocket_rank_effect,
+    plot_score_stability,
+)
 
 
 class ReportsPage(BasePage):
@@ -33,144 +34,6 @@ class ReportsPage(BasePage):
 
     id = "Relatórios"
     title = "Relatórios"
-
-    @staticmethod
-    def _is_monotonic(values: list[float]) -> bool:
-        """Verifica se a sequência é monotônica não decrescente."""
-
-        return all(values[idx] <= values[idx + 1] for idx in range(len(values) - 1))
-
-    @staticmethod
-    def _series_values(series: list[dict[str, float]]) -> list[float]:
-        """Extrai os valores numéricos da série, ignorando ausências."""
-
-        return [float(item["score"]) for item in series if item.get("score") is not None]
-
-    @staticmethod
-    def _prepare_series(series: list[dict[str, float]]) -> list[dict[str, float]]:
-        """Ordena a série pelo step para garantir plotagem consistente."""
-
-        return sorted(series, key=lambda item: item.get("step", 0))
-
-    @staticmethod
-    def _compute_evals_cumulative(series: list[dict[str, float]]) -> list[dict[str, float]]:
-        """Calcula avaliações acumuladas, preservando séries já cumulativas."""
-
-        ordered = ReportsPage._prepare_series(series)
-        values = ReportsPage._series_values(ordered)
-        if not values:
-            return []
-        if ReportsPage._is_monotonic(values):
-            # PT-BR: se já é cumulativo, mantemos para evitar dupla soma.
-            return [{"step": item["step"], "score": float(item["score"])} for item in ordered]
-        cumulative = []
-        total = 0.0
-        for item in ordered:
-            value = float(item["score"])
-            total += value
-            # PT-BR: somamos incrementalmente quando a série é incremental.
-            cumulative.append({"step": item["step"], "score": total})
-        return cumulative
-
-    @staticmethod
-    def _pair_best_vs_evals(
-        best_series: list[dict[str, float]],
-        evals_cumulative: list[dict[str, float]],
-    ) -> list[dict[str, float]]:
-        """Associa best score às avaliações acumuladas pelo mesmo step."""
-
-        best_by_step = {
-            item["step"]: float(item["score"]) for item in best_series if item.get("score") is not None
-        }
-        paired = []
-        for item in evals_cumulative:
-            step = item.get("step")
-            if step in best_by_step and item.get("score") is not None:
-                # PT-BR: usamos avaliações no eixo X e best score no eixo Y.
-                paired.append({"step": float(item["score"]), "score": best_by_step[step]})
-        return paired
-
-    @staticmethod
-    def _pair_best_vs_cost(
-        best_series: list[dict[str, float]],
-        cost_series: list[dict[str, float]],
-    ) -> list[dict[str, float]]:
-        """Associa best score ao custo acumulado (n_eval_total)."""
-
-        cost_by_step = {
-            item["step"]: float(item["score"]) for item in cost_series if item.get("score") is not None
-        }
-        paired = []
-        for item in best_series:
-            step = item.get("step")
-            if step in cost_by_step and item.get("score") is not None:
-                paired.append({"step": cost_by_step[step], "score": float(item["score"])})
-        return paired
-
-    @staticmethod
-    def _plot_line(
-        data: list[dict[str, float]],
-        x_key: str,
-        y_key: str,
-        title: str,
-        xlabel: str,
-        ylabel: str,
-        label: str | None = None,
-    ) -> plt.Figure:
-        """Plota uma linha simples a partir de uma lista de dicionários."""
-
-        fig, ax = plt.subplots()
-        xs = [item[x_key] for item in data]
-        ys = [item[y_key] for item in data]
-        ax.plot(xs, ys, label=label)
-        ax.set_title(title)
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel(ylabel)
-        if label:
-            ax.legend()
-        return fig
-
-    @staticmethod
-    def _plot_multi_line(
-        series_list: list[list[dict[str, float]]],
-        labels: list[str],
-        title: str,
-        xlabel: str,
-        ylabel: str,
-    ) -> plt.Figure:
-        """Plota múltiplas séries em um mesmo gráfico."""
-
-        fig, ax = plt.subplots()
-        for series, label in zip(series_list, labels, strict=False):
-            xs = [item["step"] for item in series]
-            ys = [item["score"] for item in series]
-            ax.plot(xs, ys, label=label)
-        ax.set_title(title)
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel(ylabel)
-        ax.legend()
-        return fig
-
-    @staticmethod
-    def _plot_scatter(
-        xs: list[float],
-        ys: list[float],
-        labels: list[str],
-        title: str,
-        xlabel: str,
-        ylabel: str,
-    ) -> plt.Figure:
-        """Plota pontos de comparação únicos com rótulos opcionais."""
-
-        fig, ax = plt.subplots()
-        for x_val, y_val, label in zip(xs, ys, labels, strict=False):
-            ax.scatter([x_val], [y_val], label=label)
-        ax.set_title(title)
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel(ylabel)
-        if labels:
-            ax.legend()
-        return fig
 
     @staticmethod
     def _download_csv_button(label: str, df: pd.DataFrame, filename: str) -> None:
@@ -194,7 +57,10 @@ class ReportsPage(BasePage):
         for line in content:
             if not line.strip():
                 continue
-            records.append(json.loads(line))
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
         return records
 
     @staticmethod
@@ -318,10 +184,84 @@ class ReportsPage(BasePage):
 
         if summary_path and summary_path.exists():
             try:
-                return load_json(summary_path)
+                return load_any_json(summary_path)
             except (OSError, json.JSONDecodeError):
                 return fallback
         return fallback
+
+    @staticmethod
+    def _buscar_jsonl_na_pasta(base_dir: Path) -> list[Path]:
+        """Lista JSONL disponíveis na pasta e subpastas."""
+
+        candidatos = sorted(base_dir.glob("*.jsonl"))
+        candidatos += sorted(base_dir.rglob("metrics.jsonl"))
+        vistos: set[Path] = set()
+        unicos: list[Path] = []
+        for candidato in candidatos:
+            if candidato in vistos:
+                continue
+            vistos.add(candidato)
+            unicos.append(candidato)
+        return unicos
+
+    @staticmethod
+    def _ultimo_valor(lista: list[Any]) -> Any:
+        """Retorna o último valor não nulo da lista."""
+
+        for valor in reversed(lista):
+            if valor is not None:
+                return valor
+        return None
+
+    @staticmethod
+    def _resumo_gap(series: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
+        """Monta resumo do gap com base em séries e summary."""
+
+        n_eval = ReportsPage._ultimo_valor(series.get("n_eval_total", []))
+        n_filtered = ReportsPage._ultimo_valor(series.get("n_filtered", []))
+        n_selected = ReportsPage._ultimo_valor(series.get("n_selected", []))
+        runtime = ReportsPage._ultimo_valor(series.get("runtime_s", []))
+        expensive = ReportsPage._ultimo_valor(series.get("expensive_ran", []))
+        best_cheap = ReportsPage._ultimo_valor(series.get("best_cheap", []))
+        best_expensive = ReportsPage._ultimo_valor(series.get("best_expensive", []))
+        if runtime is None:
+            runtime = ReportsPage._summary_value(
+                summary,
+                ["total_s", "elapsed_s", "elapsed_seconds", "elapsed"],
+            )
+        if best_cheap is None:
+            best_cheap = ReportsPage._summary_value(summary, ["best_score_cheap", "best_score", "best"])
+        if best_expensive is None:
+            best_expensive = ReportsPage._summary_value(summary, ["best_score_expensive", "best_expensive"])
+        kept_ratio = None
+        if n_eval is not None and n_selected is not None:
+            kept_ratio = float(n_selected) / max(float(n_eval), 1.0)
+        return {
+            "n_eval_total": n_eval,
+            "n_filtered": n_filtered,
+            "kept_ratio_final": kept_ratio,
+            "runtime_total_s": runtime,
+            "expensive_ran": expensive,
+            "best_cheap": best_cheap,
+            "best_expensive": best_expensive,
+        }
+
+    @staticmethod
+    def _render_png(path: Path, legenda: str) -> None:
+        """Exibe um PNG no Streamlit."""
+
+        if path.exists():
+            st.image(str(path), caption=legenda, use_container_width=True)
+
+    def _render_warning_missing(self, series: dict[str, Any]) -> None:
+        """Mostra aviso resumido sobre chaves ausentes."""
+
+        faltas = series.get("missing")
+        if not isinstance(faltas, dict):
+            return
+        faltantes = {chave: count for chave, count in faltas.items() if count}
+        if faltantes:
+            st.caption(f"Campos ausentes em parte das métricas: {faltantes}")
 
     def _render_single_report(
         self,
@@ -331,66 +271,46 @@ class ReportsPage(BasePage):
     ) -> None:
         """Renderiza relatório de execução única com gráficos e resumos."""
 
-        st.subheader("Resumo da execução")
-        fallback_scores = extract_best_scores(metrics_records or [])
-        summary_rows = self._build_summary_rows(summary_data, fallback_scores)
-        st.table(summary_rows)
-        summary_df = pd.DataFrame(summary_rows)
-        self._download_csv_button("Baixar tabela resumo (CSV)", summary_df, "resumo_execucao.csv")
-
-        st.subheader("Convergência do score")
         if not metrics_records:
             st.warning("Nenhum arquivo .jsonl selecionado para métricas. Selecione um para ver gráficos.")
             return
 
-        # PT-BR: agregamos por step e aplicamos melhor-so-far para evitar serrilhado.
-        best_series, _ = metrics_series(
-            metrics_records,
-            ["best_score", "best_score_cheap", "best"],
-            aggregate="min",
-        )
-        if best_series:
-            best_series = best_so_far(best_series, mode="max")
-            fig = self._plot_line(
-                best_series,
-                "step",
-                "score",
-                "Best score vs step",
-                "Step",
-                "Best score",
-            )
-            st.pyplot(fig)
-            plt.close(fig)
-        else:
-            st.warning("Não foi possível encontrar best score nas métricas.")
+        series = extract_series(metrics_records)
+        st.subheader("Resumo do Gap")
+        resumo = self._resumo_gap(series, summary_data)
+        st.table(pd.DataFrame([resumo]))
 
-        cost_series = aggregate_cost(metrics_records)
-        if cost_series and best_series:
-            paired_series = self._pair_best_vs_cost(best_series, cost_series)
-            best_expensive_series, _ = metrics_series(
-                metrics_records,
-                ["best_score_expensive"],
-                aggregate="min",
-            )
-            lines = [paired_series]
-            labels = ["Cheap"]
-            if best_expensive_series:
-                best_expensive_series = best_so_far(best_expensive_series, mode="max")
-                paired_expensive = self._pair_best_vs_cost(best_expensive_series, cost_series)
-                if paired_expensive:
-                    lines.append(paired_expensive)
-                    labels.append("Expensive")
-            fig = self._plot_multi_line(
-                lines,
-                labels,
-                "Custo acumulado vs best score",
-                "n_eval_total (aprox.)",
-                "Best score",
-            )
-            st.pyplot(fig)
-            plt.close(fig)
+        st.subheader("Resumo da execução")
+        summary_rows = self._build_summary_rows(summary_data, resumo)
+        st.table(summary_rows)
+        summary_df = pd.DataFrame(summary_rows)
+        self._download_csv_button("Baixar tabela resumo (CSV)", summary_df, "resumo_execucao.csv")
+
+        self._render_warning_missing(series)
+        st.subheader("Gráficos")
+        temp_dir = Path(tempfile.mkdtemp(prefix="reports_"))
+
+        omega_png = temp_dir / "omega_reduction.png"
+        plot_omega_reduction(series, omega_png)
+        self._render_png(omega_png, "Redução de Ω para Ω'")
+
+        cost_png = temp_dir / "cost_quality.png"
+        plot_cost_quality(series, cost_png)
+        self._render_png(cost_png, "Custo x Qualidade")
+
+        stability_png = temp_dir / "score_stability.png"
+        plot_score_stability(series, stability_png)
+        self._render_png(stability_png, "Estabilidade do score")
+
+        pocket_png = temp_dir / "pocket_effect.png"
+        plot_pocket_rank_effect(metrics_records, pocket_png)
+        self._render_png(pocket_png, "Efeito do pocket ranking")
+
+        filter_png = temp_dir / "filter_distribution.png"
+        if plot_filter_distribution(metrics_records, filter_png):
+            self._render_png(filter_png, "Distribuição pré vs pós filtro")
         else:
-            st.warning("n_eval_total não disponível para plotar custo acumulado.")
+            st.warning("Dados de distribuição não disponíveis.")
 
     def _render_compare_report(
         self,
@@ -412,22 +332,22 @@ class ReportsPage(BasePage):
             st.warning("Não foi possível montar a tabela de comparação com os dados disponíveis.")
 
         st.subheader("Resumo do summary.json")
-        fallback_full = extract_best_scores(metrics_full or [])
-        fallback_reduced = extract_best_scores(metrics_reduced or [])
+        series_full = extract_series(metrics_full or [])
+        series_reduced = extract_series(metrics_reduced or [])
         summary_table = pd.DataFrame(
             [
                 {
                     "Modo": "Completo",
                     **{
                         row["Campo"]: row["Valor"]
-                        for row in self._build_summary_rows(summary_full, fallback_full)
+                        for row in self._build_summary_rows(summary_full, self._resumo_gap(series_full, summary_full))
                     },
                 },
                 {
                     "Modo": "Reduzido",
                     **{
                         row["Campo"]: row["Valor"]
-                        for row in self._build_summary_rows(summary_reduced, fallback_reduced)
+                        for row in self._build_summary_rows(summary_reduced, self._resumo_gap(series_reduced, summary_reduced))
                     },
                 },
             ]
@@ -441,48 +361,67 @@ class ReportsPage(BasePage):
             st.warning("Selecione arquivos .jsonl para completo e reduzido para comparar curvas.")
             return
 
-        st.subheader("Convergência (Full vs Reduced)")
-        full_best, _ = metrics_series(
-            metrics_full,
-            ["best_score", "best_score_cheap", "best"],
-            aggregate="min",
-        )
-        reduced_best, _ = metrics_series(
-            metrics_reduced,
-            ["best_score", "best_score_cheap", "best"],
-            aggregate="min",
-        )
-        if full_best and reduced_best:
-            full_best = best_so_far(full_best, mode="max")
-            reduced_best = best_so_far(reduced_best, mode="max")
-            fig = self._plot_multi_line(
-                [full_best, reduced_best],
-                ["Completo", "Reduzido"],
-                "Best score vs step",
-                "Step",
-                "Best score",
-            )
-            st.pyplot(fig)
-            plt.close(fig)
-        else:
-            st.warning("Não foi possível montar séries de best score para comparação.")
+        st.subheader("Resumo do Gap")
+        resumo_full = self._resumo_gap(series_full, summary_full)
+        resumo_reduced = self._resumo_gap(series_reduced, summary_reduced)
+        speedup = None
+        delta_quality = None
+        if resumo_full.get("runtime_total_s") and resumo_reduced.get("runtime_total_s"):
+            try:
+                speedup = float(resumo_full["runtime_total_s"]) / float(resumo_reduced["runtime_total_s"])
+            except (TypeError, ValueError, ZeroDivisionError):
+                speedup = None
+        if resumo_full.get("best_cheap") is not None and resumo_reduced.get("best_cheap") is not None:
+            try:
+                delta_quality = float(resumo_reduced["best_cheap"]) - float(resumo_full["best_cheap"])
+            except (TypeError, ValueError):
+                delta_quality = None
+        resumo_compare = {
+            "speedup": speedup,
+            "delta_quality": delta_quality,
+        }
+        st.table(pd.DataFrame([{"Modo": "Completo", **resumo_full}, {"Modo": "Reduzido", **resumo_reduced}]))
+        st.table(pd.DataFrame([resumo_compare]))
 
-        full_cost = aggregate_cost(metrics_full)
-        reduced_cost = aggregate_cost(metrics_reduced)
-        if full_cost and reduced_cost and full_best and reduced_best:
-            full_best_eval = self._pair_best_vs_cost(full_best, full_cost)
-            reduced_best_eval = self._pair_best_vs_cost(reduced_best, reduced_cost)
-            fig = self._plot_multi_line(
-                [full_best_eval, reduced_best_eval],
-                ["Completo", "Reduzido"],
-                "Custo acumulado vs best score",
-                "n_eval_total (aprox.)",
-                "Best score",
-            )
-            st.pyplot(fig)
-            plt.close(fig)
-        else:
-            st.warning("n_eval_total ou best score não disponíveis para comparação por custo.")
+        self._render_warning_missing(series_full)
+        self._render_warning_missing(series_reduced)
+
+        st.subheader("Gráficos (Full vs Reduced)")
+        temp_dir = Path(tempfile.mkdtemp(prefix="reports_compare_"))
+
+        omega_full = temp_dir / "omega_full.png"
+        omega_reduced = temp_dir / "omega_reduced.png"
+        plot_omega_reduction(series_full, omega_full)
+        plot_omega_reduction(series_reduced, omega_reduced)
+        col1, col2 = st.columns(2)
+        with col1:
+            self._render_png(omega_full, "Redução Ω (Completo)")
+        with col2:
+            self._render_png(omega_reduced, "Redução Ω (Reduzido)")
+
+        cost_png = temp_dir / "cost_quality_compare.png"
+        plot_cost_quality({"full": series_full, "reduced": series_reduced}, cost_png)
+        self._render_png(cost_png, "Custo x Qualidade (Comparativo)")
+
+        stability_full = temp_dir / "stability_full.png"
+        stability_reduced = temp_dir / "stability_reduced.png"
+        plot_score_stability(series_full, stability_full)
+        plot_score_stability(series_reduced, stability_reduced)
+        col3, col4 = st.columns(2)
+        with col3:
+            self._render_png(stability_full, "Estabilidade (Completo)")
+        with col4:
+            self._render_png(stability_reduced, "Estabilidade (Reduzido)")
+
+        pocket_full = temp_dir / "pocket_full.png"
+        pocket_reduced = temp_dir / "pocket_reduced.png"
+        plot_pocket_rank_effect(metrics_full or [], pocket_full)
+        plot_pocket_rank_effect(metrics_reduced or [], pocket_reduced)
+        col5, col6 = st.columns(2)
+        with col5:
+            self._render_png(pocket_full, "Pocket ranking (Completo)")
+        with col6:
+            self._render_png(pocket_reduced, "Pocket ranking (Reduzido)")
 
     def render(self, state: AppState) -> None:
         """Renderiza a página completa de relatórios."""
@@ -539,22 +478,19 @@ class ReportsPage(BasePage):
             json_map = {path.name: path for path in json_paths}
             selected_name = st.selectbox("Escolha o JSON principal", list(json_map.keys()))
             main_json_path = json_map[selected_name]
-            json_payloads = {name: load_json(path) for name, path in json_map.items()}
+            json_payloads = {name: load_any_json(path) for name, path in json_map.items()}
             main_json = json_payloads[selected_name]
             aux_jsons = {name: payload for name, payload in json_payloads.items() if name != selected_name}
 
-            jsonl_paths = sorted(selected_folder.glob("*.jsonl"))
+            jsonl_paths = self._buscar_jsonl_na_pasta(selected_folder)
             jsonl_map = {path.name: path for path in jsonl_paths}
 
             kind = infer_json_kind(main_json)
             if kind == "single" and jsonl_map:
-                report_metrics_path = self._resolve_report_path(
-                    self._resolve_report_path(base_dir, main_json.get("outdir")),
-                    main_json.get("metrics_path"),
-                )
-                if report_metrics_path and report_metrics_path.exists():
-                    metrics_path = report_metrics_path
-                    metrics_records = load_metrics_series(metrics_path)
+                match = find_matching_jsonl(main_json_path)
+                if match and match.exists():
+                    metrics_path = match
+                    metrics_records = load_jsonl(metrics_path)
                 else:
                     options = ["Nenhum"] + list(jsonl_map.keys())
                     selected_metrics = st.selectbox("Arquivo de métricas (.jsonl)", options)
@@ -570,10 +506,10 @@ class ReportsPage(BasePage):
                 report_reduced_path = self._resolve_report_path(reduced_base, reduced_block.get("metrics_path"))
                 if report_full_path and report_full_path.exists():
                     metrics_full_path = report_full_path
-                    metrics_full = load_metrics_series(metrics_full_path)
+                    metrics_full = load_jsonl(metrics_full_path)
                 if report_reduced_path and report_reduced_path.exists():
                     metrics_reduced_path = report_reduced_path
-                    metrics_reduced = load_metrics_series(metrics_reduced_path)
+                    metrics_reduced = load_jsonl(metrics_reduced_path)
 
                 if metrics_full is None or metrics_reduced is None:
                     options = ["Nenhum"] + list(jsonl_map.keys())
@@ -640,13 +576,10 @@ class ReportsPage(BasePage):
             )
             summary_data = self._load_summary_data(summary_path, main_json)
             if metrics_records is None:
-                report_metrics_path = self._resolve_report_path(
-                    self._resolve_report_path(base_dir, main_json.get("outdir")),
-                    main_json.get("metrics_path"),
-                )
+                report_metrics_path = find_matching_jsonl(main_json_path) if main_json_path else None
                 if report_metrics_path and report_metrics_path.exists():
                     metrics_path = report_metrics_path
-                    metrics_records = load_metrics_series(metrics_path)
+                    metrics_records = load_jsonl(metrics_path)
         elif kind == "compare":
             full_block = self._extract_compare_block(main_json, "full") or {}
             reduced_block = self._extract_compare_block(main_json, "reduced") or {}
@@ -667,7 +600,7 @@ class ReportsPage(BasePage):
                 )
                 if report_full_path and report_full_path.exists():
                     metrics_full_path = report_full_path
-                    metrics_full = load_metrics_series(metrics_full_path)
+                    metrics_full = load_jsonl(metrics_full_path)
             if metrics_reduced is None:
                 report_reduced_path = self._resolve_report_path(
                     self._resolve_report_path(base_dir, reduced_block.get("outdir")),
@@ -675,7 +608,7 @@ class ReportsPage(BasePage):
                 )
                 if report_reduced_path and report_reduced_path.exists():
                     metrics_reduced_path = report_reduced_path
-                    metrics_reduced = load_metrics_series(metrics_reduced_path)
+                    metrics_reduced = load_jsonl(metrics_reduced_path)
 
         bundle = ReportBundle(
             kind=kind,
