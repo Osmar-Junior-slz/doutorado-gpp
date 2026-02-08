@@ -12,6 +12,12 @@ def test_load_pockets_grid_generates_non_global():
     cfg = {"pocket_grid_size": 4.0, "min_pocket_atoms": 1}
 
     pockets = load_pockets(receptor, cfg=cfg)
+    pockets_repeat = load_pockets(receptor, cfg=cfg)
 
     assert len(pockets) >= 1
-    assert all(pocket.id != "global" for pocket in pockets)
+    assert any(pocket.id != "global" for pocket in pockets)
+    assert any(pocket.id.startswith("auto_grid_") for pocket in pockets)
+    assert [pocket.id for pocket in pockets] == [pocket.id for pocket in pockets_repeat]
+    assert [pocket.center.tolist() for pocket in pockets] == [
+        pocket.center.tolist() for pocket in pockets_repeat
+    ]
