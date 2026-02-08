@@ -14,16 +14,33 @@ def score_pose_cheap(pose: Pose, pocket: Pocket, weights: Dict[str, float]) -> f
     """Compute a heuristic geometric score (not a physical energy model)."""
 
     pose_coords = np.asarray(pose.coords, dtype=float)
+    pocket_coords_source = "meta.coords"
     pocket_coords = pocket.meta.get("coords")
     if pocket_coords is None:
+        pocket_coords_source = "meta.atoms"
         pocket_coords = pocket.meta.get("atoms")
     if pocket_coords is None and getattr(pocket, "coords", None) is not None:
+        pocket_coords_source = "pocket.coords"
         pocket_coords = pocket.coords
     if pocket_coords is None:
+        pocket_coords_source = "center"
         pocket_coords = pocket.center.reshape(1, 3)
     pocket_coords = np.asarray(pocket_coords, dtype=float)
 
     if pose_coords.size == 0 or pocket_coords.size == 0:
+        debug_logger = pocket.meta.get("debug_logger") if isinstance(pocket.meta, dict) else None
+        if debug_logger is not None:
+            reason = "empty_pose_coords" if pose_coords.size == 0 else "empty_pocket_coords"
+            debug_logger.log(
+                {
+                    "type": "cheap_score_zero",
+                    "reason": reason,
+                    "pose_coords_n": int(pose_coords.shape[0]),
+                    "pocket_coords_n": int(pocket_coords.shape[0]),
+                    "pocket_id": getattr(pocket, "id", None),
+                    "pocket_coords_source": pocket_coords_source,
+                }
+            )
         return 0.0
 
     clash_thresh = 2.0

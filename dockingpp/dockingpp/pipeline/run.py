@@ -19,6 +19,7 @@ from dockingpp.priors.pose import PriorNetPose
 from dockingpp.scoring.cheap import score_pose_cheap
 from dockingpp.scoring.expensive import score_pose_expensive
 from dockingpp.search.abc_ga_vgos import ABCGAVGOSSearch
+from dockingpp.utils.debug_logger import DebugLogger
 
 
 class Config(BaseModel):
@@ -43,6 +44,9 @@ class Config(BaseModel):
     full_search: bool = True
     max_pockets_used: int = 8
     search_space_mode: str = "global"
+    debug_log_enabled: bool = False
+    debug_log_path: Optional[str] = None
+    debug_log_level: str = "INFO"
 
     class Config:
         extra = "allow"
@@ -113,128 +117,171 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
     # PT-BR: criamos o diretório antes do logger para permitir escrita incremental
     # do metrics.jsonl, evitando que a UI só veja progresso no final.
     os.makedirs(out_dir, exist_ok=True)
-    if receptor_path == "__dummy__" and peptide_path == "__dummy__":
-        receptor, peptide, dummy_pockets = _dummy_inputs()
-    else:
-        receptor = load_receptor(receptor_path)
-        peptide = load_peptide(peptide_path)
-        dummy_pockets = []
+    debug_log_enabled = bool(getattr(cfg, "debug_log_enabled", False))
+    debug_log_path = getattr(cfg, "debug_log_path", None) or os.path.join(out_dir, "debug.jsonl")
+    debug_log_level = str(getattr(cfg, "debug_log_level", "INFO"))
+    debug_logger = DebugLogger(enabled=debug_log_enabled, path=debug_log_path, level=debug_log_level)
+    debug_logger.run_id = datetime.utcnow().isoformat() + "Z"
+    cfg.debug_logger = debug_logger
 
-    # PT-BR: live_write=True garante métricas disponíveis durante a execução.
-    # As métricas por geração incluem "generation" (0..N) para a UI calcular
-    # progresso correto; o "step" permanece como contador global para séries.
-    logger = RunLogger(out_dir=out_dir, live_write=True)
-    cfg.expensive_logger = logger
-    search_space_mode = getattr(cfg, "search_space_mode", "global")
-    if search_space_mode == "global":
-        pockets = [_build_global_pocket(receptor, cfg)]
-        total_pockets = 1
-        selected_pockets = 1
-    else:
-        pockets = dummy_pockets or load_pockets(
-            receptor,
-            cfg=cfg,
-            pockets_path=getattr(cfg, "pockets_path", None),
-        )
-        total_pockets = len(pockets)
-        ranked = rank_pockets(receptor, pockets, peptide=peptide)
-        if not ranked:
-            global_pockets = [pocket for pocket in pockets if getattr(pocket, "id", None) == "global"]
-            pockets = global_pockets or pockets
-        elif not getattr(cfg, "full_search", True):
-            # PT-BR: o erro anterior ocorria quando o "reduced" ainda varria todos
-            # os pockets na busca. Aqui limitamos explicitamente aos top_pockets,
-            # garantindo que o espaço de busca seja reduzido de fato.
-            top_pockets = int(getattr(cfg, "top_pockets", len(ranked)) or 0)
-            if top_pockets <= 0:
-                pockets = [pocket for pocket, _ in ranked]
-            elif total_pockets > top_pockets:
-                pockets = [pocket for pocket, _ in ranked[:top_pockets]]
-            else:
-                pockets = [pocket for pocket, _ in ranked]
-        else:
-            max_pockets_used = int(getattr(cfg, "max_pockets_used", 8) or 0)
-            if max_pockets_used <= 0:
-                max_pockets_used = len(ranked)
-            pockets = [pocket for pocket, _ in ranked[:max_pockets_used]]
-        selected_pockets = len(pockets)
-
-    # PT-BR: métricas globais de seleção. "n_pockets_total" é o total detectado,
-    # "n_pockets_used" é quantos realmente foram passados para a busca, e
-    # "reduction_ratio" = 1 - used/total (deve ser > 0 no modo reduced).
-    logger.log_metric("total_pockets", float(total_pockets), step=0)
-    logger.log_metric("selected_pockets", float(selected_pockets), step=0)
-    logger.log_global_metrics(total_pockets, selected_pockets)
-    search = ABCGAVGOSSearch(cfg)
-    prior_pocket = PriorNetPocket()
-    prior_pose = PriorNetPose()
-
-    start_search = time.perf_counter()
-    result = search.search(
-        receptor=receptor,
-        peptide=peptide,
-        pockets=pockets,
-        cfg=cfg,
-        score_cheap_fn=score_pose_cheap,
-        score_expensive_fn=score_pose_expensive,
-        prior_pocket=prior_pocket,
-        prior_pose=prior_pose,
-        logger=logger,
-    )
-    end_search = time.perf_counter()
-    end_total = time.perf_counter()
-
-    config_resolved_subset = {
-        "seed": cfg.seed,
-        "generations": cfg.generations,
-        "pop_size": cfg.pop_size,
-        "topk": cfg.topk,
-        "search_space_mode": search_space_mode,
-        "full_search": bool(getattr(cfg, "full_search", True)),
-        "top_pockets": int(getattr(cfg, "top_pockets", 0) or 0),
-        "max_pockets_used": int(getattr(cfg, "max_pockets_used", 0) or 0),
-        "expensive_every": int(getattr(cfg, "expensive_every", 0) or 0),
-        "expensive_topk": getattr(cfg, "expensive_topk", None),
-    }
-    best_pose_id = result.best_pose.meta.get("pose_id") or result.best_pose.meta.get("id")
-
-    result_path = os.path.join(out_dir, "result.json")
-    with open(result_path, "w", encoding="utf-8") as handle:
-        payload = {
-            "mode": "single",
-            "best_score_cheap": result.best_pose.score_cheap,
-            "best_score_expensive": result.best_pose.score_expensive,
-            "best_pose_id": best_pose_id,
-            "n_pockets_detected": total_pockets,
-            "n_pockets_used": selected_pockets,
-            "search_space_mode": search_space_mode,
-            "config_resolved_subset": config_resolved_subset,
-            "timing": {
-                "total_s": end_total - start_total,
-                "scoring_cheap_s": None,
-                "scoring_expensive_s": None,
-                "search_s": end_search - start_search,
-            },
+    config_mode = "full" if getattr(cfg, "full_search", True) else "reduced"
+    debug_logger.log(
+        {
+            "type": "config_resolved",
+            "mode": config_mode,
+            "search_space_mode": getattr(cfg, "search_space_mode", None),
+            "full_search": bool(getattr(cfg, "full_search", True)),
+            "top_pockets": getattr(cfg, "top_pockets", None),
+            "max_pockets_used": getattr(cfg, "max_pockets_used", None),
+            "generations": getattr(cfg, "generations", None),
+            "pop_size": getattr(cfg, "pop_size", None),
         }
-        handle.write(json.dumps(payload, indent=2))
-
-    logger.flush(out_dir)
-    mode_label = "full" if getattr(cfg, "full_search", True) else "reduced"
-    logger.flush_timeseries(out_dir, mode=mode_label)
-    _write_summary(
-        out_dir=out_dir,
-        run_id=datetime.utcnow().isoformat() + "Z",
-        mode="single",
-        total_pockets=total_pockets,
-        selected_pockets=selected_pockets,
-        best_score_cheap=result.best_pose.score_cheap,
-        best_score_expensive=result.best_pose.score_expensive,
-        best_pose_pocket_id=result.best_pose.meta.get("pocket_id"),
-        config_resolved_subset=config_resolved_subset,
-        records=logger.records,
-        pockets=pockets,
     )
-    return result
+
+    try:
+        if receptor_path == "__dummy__" and peptide_path == "__dummy__":
+            receptor, peptide, dummy_pockets = _dummy_inputs()
+        else:
+            receptor = load_receptor(receptor_path)
+            peptide = load_peptide(peptide_path)
+            dummy_pockets = []
+
+        # PT-BR: live_write=True garante métricas disponíveis durante a execução.
+        # As métricas por geração incluem "generation" (0..N) para a UI calcular
+        # progresso correto; o "step" permanece como contador global para séries.
+        logger = RunLogger(out_dir=out_dir, live_write=True)
+        cfg.expensive_logger = logger
+        search_space_mode = getattr(cfg, "search_space_mode", "global")
+        if search_space_mode == "global":
+            pockets = [_build_global_pocket(receptor, cfg)]
+            total_pockets = 1
+            selected_pockets = 1
+        else:
+            pockets = dummy_pockets or load_pockets(
+                receptor,
+                cfg=cfg,
+                pockets_path=getattr(cfg, "pockets_path", None),
+            )
+            total_pockets = len(pockets)
+            ranked = rank_pockets(receptor, pockets, peptide=peptide, debug_logger=debug_logger)
+            if not ranked:
+                global_pockets = [pocket for pocket in pockets if getattr(pocket, "id", None) == "global"]
+                pockets = global_pockets or pockets
+            elif not getattr(cfg, "full_search", True):
+                # PT-BR: o erro anterior ocorria quando o "reduced" ainda varria todos
+                # os pockets na busca. Aqui limitamos explicitamente aos top_pockets,
+                # garantindo que o espaço de busca seja reduzido de fato.
+                top_pockets = int(getattr(cfg, "top_pockets", len(ranked)) or 0)
+                if top_pockets <= 0:
+                    pockets = [pocket for pocket, _ in ranked]
+                elif total_pockets > top_pockets:
+                    pockets = [pocket for pocket, _ in ranked[:top_pockets]]
+                else:
+                    pockets = [pocket for pocket, _ in ranked]
+            else:
+                max_pockets_used = int(getattr(cfg, "max_pockets_used", 8) or 0)
+                if max_pockets_used <= 0:
+                    max_pockets_used = len(ranked)
+                pockets = [pocket for pocket, _ in ranked[:max_pockets_used]]
+            selected_pockets = len(pockets)
+
+        for pocket in pockets:
+            if hasattr(pocket, "meta") and pocket.meta is not None:
+                pocket.meta.setdefault("debug_logger", debug_logger)
+        selected_ids = [str(getattr(pocket, "id", "")) for pocket in pockets]
+        debug_logger.log(
+            {
+                "type": "pocket_selection",
+                "full_search": bool(getattr(cfg, "full_search", True)),
+                "top_pockets": getattr(cfg, "top_pockets", None),
+                "max_pockets_used": getattr(cfg, "max_pockets_used", None),
+                "total": int(total_pockets),
+                "selected": int(selected_pockets),
+                "selected_ids": selected_ids,
+            }
+        )
+
+        # PT-BR: métricas globais de seleção. "n_pockets_total" é o total detectado,
+        # "n_pockets_used" é quantos realmente foram passados para a busca, e
+        # "reduction_ratio" = 1 - used/total (deve ser > 0 no modo reduced).
+        logger.log_metric("total_pockets", float(total_pockets), step=0)
+        logger.log_metric("selected_pockets", float(selected_pockets), step=0)
+        logger.log_global_metrics(total_pockets, selected_pockets)
+        search = ABCGAVGOSSearch(cfg)
+        prior_pocket = PriorNetPocket()
+        prior_pose = PriorNetPose()
+
+        start_search = time.perf_counter()
+        result = search.search(
+            receptor=receptor,
+            peptide=peptide,
+            pockets=pockets,
+            cfg=cfg,
+            score_cheap_fn=score_pose_cheap,
+            score_expensive_fn=score_pose_expensive,
+            prior_pocket=prior_pocket,
+            prior_pose=prior_pose,
+            logger=logger,
+        )
+        end_search = time.perf_counter()
+        end_total = time.perf_counter()
+
+        config_resolved_subset = {
+            "seed": cfg.seed,
+            "generations": cfg.generations,
+            "pop_size": cfg.pop_size,
+            "topk": cfg.topk,
+            "search_space_mode": search_space_mode,
+            "full_search": bool(getattr(cfg, "full_search", True)),
+            "top_pockets": int(getattr(cfg, "top_pockets", 0) or 0),
+            "max_pockets_used": int(getattr(cfg, "max_pockets_used", 0) or 0),
+            "expensive_every": int(getattr(cfg, "expensive_every", 0) or 0),
+            "expensive_topk": getattr(cfg, "expensive_topk", None),
+            "debug_log_enabled": bool(getattr(cfg, "debug_log_enabled", False)),
+            "debug_log_path": getattr(cfg, "debug_log_path", None),
+            "debug_log_level": getattr(cfg, "debug_log_level", None),
+        }
+        best_pose_id = result.best_pose.meta.get("pose_id") or result.best_pose.meta.get("id")
+
+        result_path = os.path.join(out_dir, "result.json")
+        with open(result_path, "w", encoding="utf-8") as handle:
+            payload = {
+                "mode": "single",
+                "best_score_cheap": result.best_pose.score_cheap,
+                "best_score_expensive": result.best_pose.score_expensive,
+                "best_pose_id": best_pose_id,
+                "n_pockets_detected": total_pockets,
+                "n_pockets_used": selected_pockets,
+                "search_space_mode": search_space_mode,
+                "config_resolved_subset": config_resolved_subset,
+                "timing": {
+                    "total_s": end_total - start_total,
+                    "scoring_cheap_s": None,
+                    "scoring_expensive_s": None,
+                    "search_s": end_search - start_search,
+                },
+            }
+            handle.write(json.dumps(payload, indent=2))
+
+        logger.flush(out_dir)
+        mode_label = "full" if getattr(cfg, "full_search", True) else "reduced"
+        logger.flush_timeseries(out_dir, mode=mode_label)
+        _write_summary(
+            out_dir=out_dir,
+            run_id=datetime.utcnow().isoformat() + "Z",
+            mode="single",
+            total_pockets=total_pockets,
+            selected_pockets=selected_pockets,
+            best_score_cheap=result.best_pose.score_cheap,
+            best_score_expensive=result.best_pose.score_expensive,
+            best_pose_pocket_id=result.best_pose.meta.get("pocket_id"),
+            config_resolved_subset=config_resolved_subset,
+            records=logger.records,
+            pockets=pockets,
+        )
+        return result
+    finally:
+        debug_logger.close()
 
 
 def _safe_float(value: Any) -> float | None:

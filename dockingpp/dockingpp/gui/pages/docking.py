@@ -328,12 +328,16 @@ class DockingPage(BasePage):
         resolved_preview = apply_overrides(base_cfg, current_overrides)
         total_generations_preview = int(resolved_preview.get("generations", 0) or 0)
         pop_size_preview = int(resolved_preview.get("pop_size", 0) or 0)
+        debug_enabled_preview = bool(resolved_preview.get("debug_log_enabled", False))
+        debug_path_preview = resolved_preview.get("debug_log_path") or ""
 
         st.write(f"Total de gerações (configuração resolvida): {total_generations_preview}")
         st.write(f"Tamanho da população (configuração resolvida): {pop_size_preview}")
 
         st.session_state.setdefault(StateKeys.OVERRIDE_GENERATIONS, total_generations_preview or 1)
         st.session_state.setdefault(StateKeys.OVERRIDE_POP_SIZE, pop_size_preview or 1)
+        st.session_state.setdefault(StateKeys.OVERRIDE_DEBUG_ENABLED, debug_enabled_preview)
+        st.session_state.setdefault(StateKeys.OVERRIDE_DEBUG_PATH, debug_path_preview)
 
         col_gen, col_pop = st.columns(2)
         with col_gen:
@@ -353,8 +357,24 @@ class DockingPage(BasePage):
                 key=StateKeys.OVERRIDE_POP_SIZE,
             )
 
+        st.subheader("Debug")
+        debug_enabled_value = st.checkbox(
+            "Gerar debug.jsonl",
+            value=bool(st.session_state[StateKeys.OVERRIDE_DEBUG_ENABLED]),
+            key=StateKeys.OVERRIDE_DEBUG_ENABLED,
+        )
+        debug_path_value = st.text_input(
+            "Caminho do debug.jsonl (opcional)",
+            value=str(st.session_state[StateKeys.OVERRIDE_DEBUG_PATH]),
+            key=StateKeys.OVERRIDE_DEBUG_PATH,
+            placeholder="(vazio = usar out_dir/debug.jsonl)",
+        )
+
         current_overrides["generations"] = int(generations_value)
         current_overrides["pop_size"] = int(pop_size_value)
+        current_overrides["debug_log_enabled"] = bool(debug_enabled_value)
+        debug_path_clean = debug_path_value.strip()
+        current_overrides["debug_log_path"] = debug_path_clean or None
         st.session_state[StateKeys.CONFIG_OVERRIDES] = current_overrides
 
         if st.button("Executar"):

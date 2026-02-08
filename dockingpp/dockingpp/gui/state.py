@@ -44,6 +44,9 @@ class StateKeys:
     OVERRIDE_TOPK = "override_topk"
     OVERRIDE_FULL_SEARCH = "override_full_search"
     OVERRIDE_TOP_POCKETS = "override_top_pockets"
+    OVERRIDE_DEBUG_ENABLED = "override_debug_enabled"
+    OVERRIDE_DEBUG_PATH = "override_debug_path"
+    OVERRIDE_DEBUG_LEVEL = "override_debug_level"
 
 
 @dataclass
