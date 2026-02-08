@@ -57,6 +57,7 @@ def test_full_search_applies_max_pockets_used(monkeypatch, tmp_path):
     cfg = Config()
     cfg.full_search = True
     cfg.max_pockets_used = 5
+    cfg.search_space_mode = "pockets"
 
     run_pipeline(cfg, "__dummy__", "__dummy__", str(tmp_path))
 
@@ -77,6 +78,7 @@ def test_reduced_search_still_uses_top_pockets(monkeypatch, tmp_path):
     cfg.full_search = False
     cfg.top_pockets = 3
     cfg.max_pockets_used = 8
+    cfg.search_space_mode = "pockets"
 
     run_pipeline(cfg, "__dummy__", "__dummy__", str(tmp_path))
 

@@ -37,6 +37,7 @@ def test_pipeline_pocket_reduction(tmp_path):
     cfg = Config(**cfg_data)
     cfg.full_search = False
     cfg.top_pockets = 1
+    cfg.search_space_mode = "pockets"
     out_dir = tmp_path / "out_reduced"
 
     run_pipeline(cfg, "__dummy__", "__dummy__", str(out_dir))
