@@ -78,7 +78,12 @@ def _pocket_coords(pocket: Pocket, receptor_coords: np.ndarray) -> np.ndarray:
     return receptor_coords[distances <= radius]
 
 
-def rank_pockets(receptor: object, pockets: list[Pocket], peptide: object | None = None) -> list[tuple[Pocket, float]]:
+def rank_pockets(
+    receptor: object,
+    pockets: list[Pocket],
+    peptide: object | None = None,
+    debug_logger: object | None = None,
+) -> list[tuple[Pocket, float]]:
     """Rank pockets by simple deterministic heuristics."""
 
     coords = _receptor_coords(receptor)
@@ -137,7 +142,32 @@ def rank_pockets(receptor: object, pockets: list[Pocket], peptide: object | None
         pocket_id = str(getattr(pocket, "id", ""))
         ranked.append((pocket, float(score), pocket_id, idx))
     ranked.sort(key=lambda item: (-item[1], item[2], item[3]))
-    return [(pocket, score) for pocket, score, _, _ in ranked]
+    ranked_pairs = [(pocket, score) for pocket, score, _, _ in ranked]
+    if debug_logger is not None:
+        if not ranked_pairs:
+            debug_logger.log({"type": "pocket_fallback", "reason": "no_ranked", "n_in": int(len(pockets))})
+        else:
+            top_n = min(5, len(ranked_pairs))
+            top_payload = []
+            for pocket, score in ranked_pairs[:top_n]:
+                meta = getattr(pocket, "meta", {}) or {}
+                top_payload.append(
+                    {
+                        "pocket_id": str(getattr(pocket, "id", "")),
+                        "score": float(score),
+                        "rank_components": meta.get("rank_components", {}),
+                    }
+                )
+            debug_logger.log(
+                {
+                    "type": "pocket_rank_summary",
+                    "n_in": int(len(pockets)),
+                    "n_out": int(len(ranked_pairs)),
+                    "top": top_payload,
+                    "weights": {key: float(value) for key, value in weights.items()},
+                }
+            )
+    return ranked_pairs
 
 
 class PriorNetPocket:

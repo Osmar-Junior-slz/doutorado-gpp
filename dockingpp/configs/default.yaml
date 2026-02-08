@@ -17,6 +17,9 @@ pockets_path: null
 search_space_mode: "global"
 pocket_mode: "global"
 pocket_margin: 2.0
+debug_log_enabled: false
+debug_log_path: null
+debug_log_level: "INFO"
 
 pocket_rank_weights:
   w_size: 1.0

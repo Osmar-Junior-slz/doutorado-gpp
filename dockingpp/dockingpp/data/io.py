@@ -78,6 +78,14 @@ def _get_cfg_value(cfg: Optional[Any], key: str, default: Any) -> Any:
     return getattr(cfg, key, default)
 
 
+def _get_debug_logger(cfg: Optional[Any]) -> Any:
+    if cfg is None:
+        return None
+    if isinstance(cfg, dict):
+        return cfg.get("debug_logger")
+    return getattr(cfg, "debug_logger", None)
+
+
 def load_pockets(
     receptor: Any,
     cfg: Optional[Any] = None,
@@ -86,6 +94,7 @@ def load_pockets(
     """Infer binding pockets from a receptor."""
 
     receptor_coords = _extract_coords(receptor)
+    debug_logger = _get_debug_logger(cfg)
     pocket_margin = float(_get_cfg_value(cfg, "pocket_margin", 2.0))
     if pockets_path and os.path.exists(pockets_path):
         with open(pockets_path, "r", encoding="utf-8") as handle:
@@ -111,6 +120,16 @@ def load_pockets(
                     coords=pocket_coords,
                     meta={"coords": pocket_coords},
                 )
+            )
+        if debug_logger is not None:
+            debug_logger.log(
+                {
+                    "type": "pocket_generation",
+                    "mode": "file",
+                    "pockets_path": pockets_path,
+                    "receptor_coords_n": int(receptor_coords.shape[0]),
+                    "n_pockets": int(len(pockets)),
+                }
             )
         return pockets
 
@@ -152,8 +171,24 @@ def load_pockets(
             coords = receptor_coords[atom_indices]
             pockets.append(build_pocket(f"auto_grid_{pocket_idx}", coords))
 
+    if debug_logger is not None:
+        debug_logger.log(
+            {
+                "type": "pocket_generation",
+                "mode": "grid",
+                "pockets_path": pockets_path,
+                "receptor_coords_n": int(receptor_coords.shape[0]),
+                "n_pockets": int(len(pockets)),
+            }
+        )
+
     if len(pockets) > 1:
         return pockets
 
+    if debug_logger is not None:
+        reason = "no_coords" if receptor_coords.size == 0 else "<=1_pocket"
+        debug_logger.log(
+            {"type": "pocket_fallback", "reason": reason, "n_generated": int(len(pockets))}
+        )
     pocket_coords = receptor_coords.copy()
     return [build_pocket("global", pocket_coords)]

@@ -82,6 +82,7 @@ class ABCGAVGOSSearch(SearchEngine):
         topk = max(1, int(getattr(cfg, "topk", 1) or 1))
         max_trans = float(getattr(cfg, "max_trans", 0.0) or 0.0)
         max_rot_deg = float(getattr(cfg, "max_rot_deg", 0.0) or 0.0)
+        debug_logger = getattr(cfg, "debug_logger", None)
 
         def random_pose() -> Pose:
             rot = self._axis_angle_rotation(rng, max_rot_deg)
@@ -94,6 +95,18 @@ class ABCGAVGOSSearch(SearchEngine):
         best_score = float("-inf")
         best_generation = 0
         population = Population(poses=poses, generation=0)
+
+        if debug_logger is not None:
+            debug_logger.log(
+                {
+                    "type": "search_pocket_start",
+                    "pocket_id": getattr(pocket, "id", None),
+                    "pocket_index": int(pocket_index),
+                    "generations": int(generations),
+                    "pop_size": int(pop_size),
+                    "topk": int(topk),
+                }
+            )
 
         for generation in range(generations):
             if generation > 0:
@@ -111,9 +124,12 @@ class ABCGAVGOSSearch(SearchEngine):
 
             scores = np.zeros(len(poses), dtype=float)
             n_clashes = 0.0
+            n_score_zero = 0
             for idx, pose in enumerate(poses):
                 pose.score_cheap = score_cheap_fn(pose, pocket, cfg.cheap_weights)
                 scores[idx] = pose.score_cheap or 0.0
+                if scores[idx] == 0.0:
+                    n_score_zero += 1
                 n_clashes += float(pose.meta.get("clashes", 0.0))
 
             population = Population(poses=poses, generation=generation)
@@ -145,8 +161,32 @@ class ABCGAVGOSSearch(SearchEngine):
             logger.log_metric("mean_score", float(np.mean(scores)), step=step, extra=extra)
             logger.log_metric("n_eval", float(len(poses)), step=step, extra=extra)
             logger.log_metric("n_clashes", float(n_clashes), step=step, extra=extra)
+            if debug_logger is not None:
+                debug_logger.log(
+                    {
+                        "type": "search_generation",
+                        "pocket_id": getattr(pocket, "id", None),
+                        "pocket_index": int(pocket_index),
+                        "generation": int(generation),
+                        "n_eval": int(len(poses)),
+                        "best_score": float(gen_best_score),
+                        "mean_score": float(np.mean(scores)),
+                        "min_score": float(np.min(scores)) if scores.size else 0.0,
+                        "max_score": float(np.max(scores)) if scores.size else 0.0,
+                        "n_score_zero": int(n_score_zero),
+                    }
+                )
 
         best_pose.meta["generation"] = best_generation
+        if debug_logger is not None:
+            debug_logger.log(
+                {
+                    "type": "search_pocket_end",
+                    "pocket_id": getattr(pocket, "id", None),
+                    "best_score": float(best_score),
+                    "best_pose_id": best_pose.meta.get("pose_id") or best_pose.meta.get("id"),
+                }
+            )
         return best_pose, population
 
     def search(
