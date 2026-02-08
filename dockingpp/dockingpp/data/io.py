@@ -233,11 +233,11 @@ def load_pockets(
             }
         )
 
+    grid_failed = False
+
     if receptor_coords.size and grid_size <= 0:
         _log_grid_failure("step_invalid", 0)
-        raise ValueError("Invalid pocket_grid_size (step must be > 0).")
-
-    grid_failed = False
+        grid_failed = True
 
     if receptor_coords.size and grid_size > 0:
         bbox_min = receptor_coords.min(axis=0) - grid_padding
@@ -253,30 +253,34 @@ def load_pockets(
             n_grid_points_total = int(nx * ny * nz)
             if n_grid_points_total <= 0:
                 _log_grid_failure("grid_empty", 0)
-                raise ValueError("Computed empty grid for pocket generation.")
-            min_coord = bbox_min
-            indices = np.floor((receptor_coords - min_coord.reshape(1, 3)) / grid_size).astype(int)
-            groups: dict[tuple[int, int, int], list[int]] = {}
-            for idx, cell in enumerate(indices):
-                key = (int(cell[0]), int(cell[1]), int(cell[2]))
-                groups.setdefault(key, []).append(idx)
-            n_candidates_before_filter = len(groups)
-            for pocket_idx, (cell, atom_indices) in enumerate(sorted(groups.items())):
-                if min_pocket_atoms and len(atom_indices) < min_pocket_atoms:
-                    continue
-                coords = receptor_coords[atom_indices]
-                pockets.append(build_pocket(f"auto_grid_{pocket_idx}", coords))
-            n_after_filter_min_atoms = len(pockets)
-            n_after_filter_density = n_after_filter_min_atoms
-            n_after_clustering = n_after_filter_min_atoms
-            if not pockets and n_candidates_before_filter > 0 and min_pocket_atoms:
-                largest_cell = max(groups.items(), key=lambda item: len(item[1]))
-                coords = receptor_coords[largest_cell[1]]
-                pockets.append(build_pocket("auto_grid_0", coords))
+                grid_failed = True
+            if not grid_failed:
+                min_coord = bbox_min
+                indices = np.floor((receptor_coords - min_coord.reshape(1, 3)) / grid_size).astype(
+                    int
+                )
+                groups: dict[tuple[int, int, int], list[int]] = {}
+                for idx, cell in enumerate(indices):
+                    key = (int(cell[0]), int(cell[1]), int(cell[2]))
+                    groups.setdefault(key, []).append(idx)
+                n_candidates_before_filter = len(groups)
+                for pocket_idx, (cell, atom_indices) in enumerate(sorted(groups.items())):
+                    if min_pocket_atoms and len(atom_indices) < min_pocket_atoms:
+                        continue
+                    coords = receptor_coords[atom_indices]
+                    pockets.append(build_pocket(f"auto_grid_{pocket_idx}", coords))
                 n_after_filter_min_atoms = len(pockets)
                 n_after_filter_density = n_after_filter_min_atoms
                 n_after_clustering = n_after_filter_min_atoms
-                _log_grid_failure("filters_removed_all", 0, recovered=True)
+                if not pockets and n_candidates_before_filter > 0 and min_pocket_atoms:
+                    largest_cell = max(groups.items(), key=lambda item: len(item[1]))
+                    coords = receptor_coords[largest_cell[1]]
+                    pockets.append(build_pocket("auto_grid_0", coords))
+                    n_after_filter_min_atoms = len(pockets)
+                    n_after_filter_density = n_after_filter_min_atoms
+                    n_after_clustering = n_after_filter_min_atoms
+                    _log_grid_failure("filters_removed_all", len(pockets), recovered=True)
+                    grid_failed = True
 
     if debug_logger is not None:
         debug_logger.log(
@@ -298,7 +302,7 @@ def load_pockets(
         debug_logger.log(
             {"type": "pocket_fallback", "reason": reason, "n_generated": int(len(pockets))}
         )
-        if receptor_coords.size:
+        if receptor_coords.size and not grid_failed:
             _log_grid_failure("unknown", 0)
     pocket_coords = receptor_coords.copy()
     return [build_pocket("global", pocket_coords)]
