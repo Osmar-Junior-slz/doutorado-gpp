@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Iterable, Literal
 
 
 _CANDIDATAS_SERIES: dict[str, list[str]] = {
@@ -19,6 +20,175 @@ _CANDIDATAS_SERIES: dict[str, list[str]] = {
     "pocket_id": ["pocket_id", "pocket"],
     "pocket_rank": ["pocket_rank", "rank"],
 }
+
+RunKind = Literal["full", "reduced", "unknown"]
+
+
+@dataclass(frozen=True)
+class ReportRun:
+    """Describe os arquivos associados a uma execução."""
+
+    run_dir: Path
+    kind: RunKind
+    summary_path: Path | None
+    result_path: Path | None
+    config_path: Path | None
+    metrics_path: Path | None
+    metrics_timeseries_path: Path | None
+    run_id: str | None = None
+
+    def label(self) -> str:
+        """Rótulo humano para seleção na UI."""
+
+        return self.run_id or self.run_dir.name
+
+
+def find_report_runs(root_dir: Path) -> list[ReportRun]:
+    """Varre uma pasta e encontra execuções single (Full/Reduced) com base no conteúdo."""
+
+    if not root_dir.exists():
+        return []
+
+    json_paths = list(root_dir.rglob("*.json"))
+    if not json_paths:
+        return []
+
+    dirs = {path.parent for path in json_paths}
+    if any(path.parent == root_dir for path in json_paths):
+        dirs.add(root_dir)
+
+    runs: list[ReportRun] = []
+    for run_dir in sorted(dirs):
+        run = _build_report_run(run_dir)
+        if run is not None:
+            runs.append(run)
+    return runs
+
+
+def pair_full_reduced(runs: Iterable[ReportRun]) -> tuple[ReportRun | None, ReportRun | None]:
+    """Seleciona um par Full/Reduced entre as execuções encontradas."""
+
+    full = None
+    reduced = None
+    for run in sorted(runs, key=lambda item: item.label()):
+        if run.kind == "full" and full is None:
+            full = run
+        elif run.kind == "reduced" and reduced is None:
+            reduced = run
+    return full, reduced
+
+
+def _build_report_run(run_dir: Path) -> ReportRun | None:
+    json_paths = sorted(run_dir.glob("*.json"))
+    if not json_paths:
+        return None
+
+    summary_path = None
+    result_path = None
+    config_path = None
+    payloads: list[dict[str, Any]] = []
+    run_id = None
+
+    for path in json_paths:
+        try:
+            payload = load_any_json(path)
+        except (OSError, json.JSONDecodeError):
+            continue
+        payloads.append(payload)
+        role = _classify_json_payload(payload)
+        if role == "summary":
+            summary_path = path
+        elif role == "result":
+            result_path = path
+            run_id = _safe_str(payload.get("run_id")) or run_id
+        elif role == "config":
+            config_path = path
+
+    kind = _infer_run_kind(payloads)
+    metrics_path = run_dir / "metrics.jsonl"
+    metrics_timeseries_path = run_dir / "metrics.timeseries.jsonl"
+    return ReportRun(
+        run_dir=run_dir,
+        kind=kind,
+        summary_path=summary_path,
+        result_path=result_path,
+        config_path=config_path,
+        metrics_path=metrics_path if metrics_path.exists() else None,
+        metrics_timeseries_path=metrics_timeseries_path if metrics_timeseries_path.exists() else None,
+        run_id=run_id,
+    )
+
+
+def _safe_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _classify_json_payload(payload: dict[str, Any]) -> str:
+    if _is_summary_payload(payload):
+        return "summary"
+    if _is_result_payload(payload):
+        return "result"
+    if _is_config_payload(payload):
+        return "config"
+    return "unknown"
+
+
+def _is_summary_payload(payload: dict[str, Any]) -> bool:
+    return bool(
+        isinstance(payload.get("timing"), dict)
+        and payload.get("best_score_cheap") is not None
+        and payload.get("mode") is not None
+    )
+
+
+def _is_result_payload(payload: dict[str, Any]) -> bool:
+    return bool(
+        payload.get("run_id") is not None
+        and payload.get("best_cheap_by_pocket") is not None
+        and payload.get("n_eval_total") is not None
+    )
+
+
+def _is_config_payload(payload: dict[str, Any]) -> bool:
+    return bool(
+        payload.get("seed") is not None
+        and payload.get("generations") is not None
+        and payload.get("pop_size") is not None
+        and (_extract_flag(payload, "full_search") is not None or _extract_flag(payload, "search_space_mode") is not None)
+    )
+
+
+def _extract_flag(payload: dict[str, Any], key: str) -> Any:
+    if key in payload:
+        return payload.get(key)
+    for container_key in ("config", "cfg", "settings", "options"):
+        nested = payload.get(container_key)
+        if isinstance(nested, dict) and key in nested:
+            return nested.get(key)
+    return None
+
+
+def _infer_run_kind(payloads: Iterable[dict[str, Any]]) -> RunKind:
+    full_signal = False
+    reduced_signal = False
+    for payload in payloads:
+        full_search = _extract_flag(payload, "full_search")
+        if full_search is True:
+            full_signal = True
+        elif full_search is False:
+            reduced_signal = True
+        search_space_mode = _extract_flag(payload, "search_space_mode")
+        if search_space_mode == "global":
+            full_signal = True
+        elif search_space_mode == "pockets":
+            reduced_signal = True
+    if full_signal:
+        return "full"
+    if reduced_signal:
+        return "reduced"
+    return "unknown"
 
 
 def load_any_json(path: str | Path) -> dict[str, Any]:
