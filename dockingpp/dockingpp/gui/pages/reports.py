@@ -19,7 +19,15 @@ from dockingpp.gui.services.report_service import (
 )
 from dockingpp.gui.state import AppState, StateKeys
 from dockingpp.gui.ui.components import download_json_button
-from dockingpp.reporting.loaders import extract_series, find_matching_jsonl, load_any_json, load_jsonl
+from dockingpp.reporting.loaders import (
+    ReportRun,
+    extract_series,
+    find_matching_jsonl,
+    find_report_runs,
+    load_any_json,
+    load_jsonl,
+    pair_full_reduced,
+)
 from dockingpp.reporting.plots import (
     plot_cost_quality,
     plot_filter_distribution,
@@ -263,21 +271,44 @@ class ReportsPage(BasePage):
         if faltantes:
             st.caption(f"Campos ausentes em parte das métricas: {faltantes}")
 
-    def _render_single_report(
-        self,
-        bundle: ReportBundle,
+    @staticmethod
+    def _merge_summary_result(summary: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+        """Mescla dados de summary e result garantindo chaves úteis no topo."""
+
+        merged: dict[str, Any] = {}
+        merged.update(result or {})
+        merged.update(summary or {})
+        timing = summary.get("timing") if isinstance(summary.get("timing"), dict) else {}
+        if not timing and isinstance(result.get("timing"), dict):
+            timing = result.get("timing")
+        if isinstance(timing, dict):
+            merged.setdefault("total_s", timing.get("total_s"))
+            merged.setdefault("elapsed_s", timing.get("elapsed_s"))
+        return merged
+
+    @staticmethod
+    def _has_time_series(records: list[dict[str, Any]] | None) -> bool:
+        """Indica se há série temporal real (mais de um ponto)."""
+
+        if not records:
+            return False
+        if len(records) <= 1:
+            return False
+        series = extract_series(records)
+        return len(set(series.get("iter", []))) > 1
+
+    @staticmethod
+    def _select_series_records(
         metrics_records: list[dict[str, Any]] | None,
-        summary_data: dict[str, Any],
-    ) -> None:
-        """Renderiza relatório de execução única com gráficos e resumos."""
+        metrics_timeseries: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]] | None:
+        """Seleciona o arquivo com série temporal preferencial."""
 
-        if not metrics_records:
-            st.warning("Nenhum arquivo .jsonl selecionado para métricas. Selecione um para ver gráficos.")
-            return
+        return metrics_timeseries or metrics_records
 
-        series = extract_series(metrics_records)
+    def _render_kpis(self, summary_data: dict[str, Any], series: dict[str, Any] | None) -> None:
         st.subheader("Resumo do Gap")
-        resumo = self._resumo_gap(series, summary_data)
+        resumo = self._resumo_gap(series or {}, summary_data)
         st.table(pd.DataFrame([resumo]))
 
         st.subheader("Resumo da execução")
@@ -285,6 +316,23 @@ class ReportsPage(BasePage):
         st.table(summary_rows)
         summary_df = pd.DataFrame(summary_rows)
         self._download_csv_button("Baixar tabela resumo (CSV)", summary_df, "resumo_execucao.csv")
+
+    def _render_single_report(
+        self,
+        bundle: ReportBundle,
+        metrics_records: list[dict[str, Any]] | None,
+        summary_data: dict[str, Any],
+        metrics_timeseries: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """Renderiza relatório de execução única com gráficos e resumos."""
+
+        series_records = self._select_series_records(metrics_records, metrics_timeseries)
+        series = extract_series(series_records or [])
+        self._render_kpis(summary_data, series)
+
+        if not self._has_time_series(series_records):
+            st.info("Sem série temporal; exibindo KPIs.")
+            return
 
         self._render_warning_missing(series)
         st.subheader("Gráficos")
@@ -303,11 +351,11 @@ class ReportsPage(BasePage):
         self._render_png(stability_png, "Estabilidade do score")
 
         pocket_png = temp_dir / "pocket_effect.png"
-        plot_pocket_rank_effect(metrics_records, pocket_png)
+        plot_pocket_rank_effect(metrics_records or series_records or [], pocket_png)
         self._render_png(pocket_png, "Efeito do pocket ranking")
 
         filter_png = temp_dir / "filter_distribution.png"
-        if plot_filter_distribution(metrics_records, filter_png):
+        if plot_filter_distribution(metrics_records or series_records or [], filter_png):
             self._render_png(filter_png, "Distribuição pré vs pós filtro")
         else:
             st.warning("Dados de distribuição não disponíveis.")
@@ -319,21 +367,24 @@ class ReportsPage(BasePage):
         metrics_reduced: list[dict[str, Any]] | None,
         summary_full: dict[str, Any],
         summary_reduced: dict[str, Any],
+        metrics_full_timeseries: list[dict[str, Any]] | None = None,
+        metrics_reduced_timeseries: list[dict[str, Any]] | None = None,
     ) -> None:
         """Renderiza relatório comparativo entre modos completo e reduzido."""
 
         st.subheader("Comparação: Completo vs Reduzido")
         rows = build_compare_table(bundle.main_json)
         if rows:
+            st.subheader("Comparação avançada")
             st.table(rows)
             compare_df = pd.DataFrame(rows)
             self._download_csv_button("Baixar tabela resumo (CSV)", compare_df, "comparacao_full_reduced.csv")
-        else:
-            st.warning("Não foi possível montar a tabela de comparação com os dados disponíveis.")
 
-        st.subheader("Resumo do summary.json")
-        series_full = extract_series(metrics_full or [])
-        series_reduced = extract_series(metrics_reduced or [])
+        st.subheader("Tabela comparativa (KPIs)")
+        series_full_records = self._select_series_records(metrics_full, metrics_full_timeseries)
+        series_reduced_records = self._select_series_records(metrics_reduced, metrics_reduced_timeseries)
+        series_full = extract_series(series_full_records or [])
+        series_reduced = extract_series(series_reduced_records or [])
         summary_table = pd.DataFrame(
             [
                 {
@@ -353,13 +404,6 @@ class ReportsPage(BasePage):
             ]
         )
         st.table(summary_table)
-
-        if not metrics_full and not metrics_reduced:
-            st.warning("Nenhum arquivo .jsonl selecionado para métricas de comparação.")
-            return
-        if not metrics_full or not metrics_reduced:
-            st.warning("Selecione arquivos .jsonl para completo e reduzido para comparar curvas.")
-            return
 
         st.subheader("Resumo do Gap")
         resumo_full = self._resumo_gap(series_full, summary_full)
@@ -385,6 +429,10 @@ class ReportsPage(BasePage):
 
         self._render_warning_missing(series_full)
         self._render_warning_missing(series_reduced)
+
+        if not self._has_time_series(series_full_records) or not self._has_time_series(series_reduced_records):
+            st.info("Sem série temporal para comparação; exibindo apenas KPIs.")
+            return
 
         st.subheader("Gráficos (Full vs Reduced)")
         temp_dir = Path(tempfile.mkdtemp(prefix="reports_compare_"))
@@ -415,13 +463,105 @@ class ReportsPage(BasePage):
 
         pocket_full = temp_dir / "pocket_full.png"
         pocket_reduced = temp_dir / "pocket_reduced.png"
-        plot_pocket_rank_effect(metrics_full or [], pocket_full)
-        plot_pocket_rank_effect(metrics_reduced or [], pocket_reduced)
+        plot_pocket_rank_effect(metrics_full or series_full_records or [], pocket_full)
+        plot_pocket_rank_effect(metrics_reduced or series_reduced_records or [], pocket_reduced)
         col5, col6 = st.columns(2)
         with col5:
             self._render_png(pocket_full, "Pocket ranking (Completo)")
         with col6:
             self._render_png(pocket_reduced, "Pocket ranking (Reduzido)")
+
+    @staticmethod
+    def _load_run_payload(path: Path | None) -> dict[str, Any]:
+        if path and path.exists():
+            try:
+                return load_any_json(path)
+            except (OSError, json.JSONDecodeError):
+                return {}
+        return {}
+
+    def _render_run_block(
+        self,
+        label: str,
+        run: ReportRun,
+    ) -> None:
+        st.subheader(label)
+        summary_payload = self._load_run_payload(run.summary_path)
+        result_payload = self._load_run_payload(run.result_path)
+        merged = self._merge_summary_result(summary_payload, result_payload)
+        metrics_records = load_jsonl(run.metrics_path) if run.metrics_path else None
+        metrics_timeseries = load_jsonl(run.metrics_timeseries_path) if run.metrics_timeseries_path else None
+        self._render_single_report(
+            ReportBundle(kind="single", main_json=merged, metrics=metrics_records, aux_jsons={}),
+            metrics_records,
+            merged,
+            metrics_timeseries,
+        )
+
+    def _render_folder_reports(self, selected_folder: Path) -> None:
+        runs = find_report_runs(selected_folder)
+        if not runs:
+            st.warning("Nenhuma execução encontrada na pasta.")
+            return
+
+        view_mode = st.selectbox("Modo de visualização", ["Separado", "Comparar"])
+
+        full_runs = [run for run in runs if run.kind == "full"]
+        reduced_runs = [run for run in runs if run.kind == "reduced"]
+
+        def _select_run(label: str, options: list[ReportRun]) -> ReportRun | None:
+            if not options:
+                st.warning(f"Nenhum run {label.lower()} encontrado.")
+                return None
+            labels = [run.label() for run in options]
+            selected = st.selectbox(f"Run {label}", labels, key=f"run_{label}")
+            return options[labels.index(selected)]
+
+        if view_mode == "Separado":
+            selected_full = _select_run("Full", full_runs) if full_runs else None
+            selected_reduced = _select_run("Reduced", reduced_runs) if reduced_runs else None
+            if selected_full:
+                self._render_run_block("Full", selected_full)
+            if selected_reduced:
+                self._render_run_block("Reduced", selected_reduced)
+            return
+
+        if view_mode == "Comparar":
+            selected_full, selected_reduced = pair_full_reduced(runs)
+            if full_runs:
+                selected_full = _select_run("Full", full_runs) or selected_full
+            if reduced_runs:
+                selected_reduced = _select_run("Reduced", reduced_runs) or selected_reduced
+            if not selected_full or not selected_reduced:
+                st.warning("É necessário selecionar runs Full e Reduced para comparar.")
+                return
+
+            summary_full = self._merge_summary_result(
+                self._load_run_payload(selected_full.summary_path),
+                self._load_run_payload(selected_full.result_path),
+            )
+            summary_reduced = self._merge_summary_result(
+                self._load_run_payload(selected_reduced.summary_path),
+                self._load_run_payload(selected_reduced.result_path),
+            )
+            metrics_full = load_jsonl(selected_full.metrics_path) if selected_full.metrics_path else None
+            metrics_reduced = load_jsonl(selected_reduced.metrics_path) if selected_reduced.metrics_path else None
+            metrics_full_timeseries = (
+                load_jsonl(selected_full.metrics_timeseries_path) if selected_full.metrics_timeseries_path else None
+            )
+            metrics_reduced_timeseries = (
+                load_jsonl(selected_reduced.metrics_timeseries_path) if selected_reduced.metrics_timeseries_path else None
+            )
+            self._render_compare_report(
+                ReportBundle(kind="compare", main_json={}, metrics=None, aux_jsons={}),
+                metrics_full,
+                metrics_reduced,
+                summary_full,
+                summary_reduced,
+                metrics_full_timeseries,
+                metrics_reduced_timeseries,
+            )
+            return
 
     def render(self, state: AppState) -> None:
         """Renderiza a página completa de relatórios."""
@@ -469,70 +609,8 @@ class ReportsPage(BasePage):
             if not selected_folder.exists():
                 st.warning("Pasta informada não existe.")
                 return
-
-            json_paths = sorted(selected_folder.glob("*.json"))
-            if not json_paths:
-                st.warning("Nenhum arquivo .json encontrado na pasta.")
-                return
-
-            json_map = {path.name: path for path in json_paths}
-            selected_name = st.selectbox("Escolha o JSON principal", list(json_map.keys()))
-            main_json_path = json_map[selected_name]
-            json_payloads = {name: load_any_json(path) for name, path in json_map.items()}
-            main_json = json_payloads[selected_name]
-            aux_jsons = {name: payload for name, payload in json_payloads.items() if name != selected_name}
-
-            jsonl_paths = self._buscar_jsonl_na_pasta(selected_folder)
-            jsonl_map = {path.name: path for path in jsonl_paths}
-
-            kind = infer_json_kind(main_json)
-            if kind == "single" and jsonl_map:
-                match = find_matching_jsonl(main_json_path)
-                if match and match.exists():
-                    metrics_path = match
-                    metrics_records = load_jsonl(metrics_path)
-                else:
-                    options = ["Nenhum"] + list(jsonl_map.keys())
-                    selected_metrics = st.selectbox("Arquivo de métricas (.jsonl)", options)
-                    if selected_metrics != "Nenhum":
-                        metrics_path = jsonl_map[selected_metrics]
-                        metrics_records = load_jsonl(metrics_path)
-            elif kind == "compare" and jsonl_map:
-                full_block = self._extract_compare_block(main_json, "full") or {}
-                reduced_block = self._extract_compare_block(main_json, "reduced") or {}
-                full_base = self._resolve_report_path(base_dir, full_block.get("outdir"))
-                reduced_base = self._resolve_report_path(base_dir, reduced_block.get("outdir"))
-                report_full_path = self._resolve_report_path(full_base, full_block.get("metrics_path"))
-                report_reduced_path = self._resolve_report_path(reduced_base, reduced_block.get("metrics_path"))
-                if report_full_path and report_full_path.exists():
-                    metrics_full_path = report_full_path
-                    metrics_full = load_jsonl(metrics_full_path)
-                if report_reduced_path and report_reduced_path.exists():
-                    metrics_reduced_path = report_reduced_path
-                    metrics_reduced = load_jsonl(metrics_reduced_path)
-
-                if metrics_full is None or metrics_reduced is None:
-                    options = ["Nenhum"] + list(jsonl_map.keys())
-                    default_full = self._guess_metrics_index(list(jsonl_map.keys()), ["full", "completo"])
-                    default_reduced = self._guess_metrics_index(list(jsonl_map.keys()), ["reduced", "reduzido"])
-                    selected_full = st.selectbox(
-                        "Métricas do modo completo (.jsonl)",
-                        options,
-                        index=default_full,
-                        key="metrics_full_folder",
-                    )
-                    selected_reduced = st.selectbox(
-                        "Métricas do modo reduzido (.jsonl)",
-                        options,
-                        index=default_reduced,
-                        key="metrics_reduced_folder",
-                    )
-                    if selected_full != "Nenhum":
-                        metrics_full_path = jsonl_map[selected_full]
-                        metrics_full = load_jsonl(metrics_full_path)
-                    if selected_reduced != "Nenhum":
-                        metrics_reduced_path = jsonl_map[selected_reduced]
-                        metrics_reduced = load_jsonl(metrics_reduced_path)
+            self._render_folder_reports(selected_folder)
+            return
         else:
             main_json_upload = st.file_uploader("JSON principal", type=["json"])
             if not main_json_upload:
@@ -620,7 +698,13 @@ class ReportsPage(BasePage):
         if bundle.kind == "single":
             self._render_single_report(bundle, metrics_records, summary_data)
         elif bundle.kind == "compare":
-            self._render_compare_report(bundle, metrics_full, metrics_reduced, summary_full, summary_reduced)
+            self._render_compare_report(
+                bundle,
+                metrics_full,
+                metrics_reduced,
+                summary_full,
+                summary_reduced,
+            )
         else:
             st.warning("Não foi possível identificar o tipo do JSON. Exibindo conteúdo bruto.")
             st.json(bundle.main_json)
