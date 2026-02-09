@@ -280,7 +280,7 @@ def load_pockets(
                     n_after_filter_density = n_after_filter_min_atoms
                     n_after_clustering = n_after_filter_min_atoms
                     _log_grid_failure("filters_removed_all", len(pockets), recovered=True)
-                    grid_failed = True
+                    grid_failed = False
 
     if debug_logger is not None:
         debug_logger.log(
