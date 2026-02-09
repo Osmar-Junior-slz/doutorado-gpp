@@ -40,3 +40,14 @@ expensive:
   clash_cutoff: 2.0
   w_att: 1.0
   w_rep: 3.0
+
+scan:
+  enabled: true
+  generations: 30
+  samples_per_pocket: 64
+  max_pockets_scan: null
+  select_top_k: 2
+  clash_cutoff: 2.0
+  contact_cutoff: 6.0
+  max_clash_ratio: 0.02
+  seed_offset: 1337
