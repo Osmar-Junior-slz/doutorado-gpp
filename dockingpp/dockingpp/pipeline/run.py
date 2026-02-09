@@ -14,6 +14,11 @@ from pydantic import BaseModel, Field
 from dockingpp.data.io import load_peptide, load_pockets, load_receptor
 from dockingpp.data.structs import Pocket, RunResult
 from dockingpp.pipeline.logging import RunLogger
+from dockingpp.pipeline.scan import (
+    build_receptor_kdtree,
+    scan_pocket_feasibility,
+    select_pockets_from_scan,
+)
 from dockingpp.priors.pocket import PriorNetPocket, rank_pockets
 from dockingpp.priors.pose import PriorNetPose
 from dockingpp.scoring.cheap import score_pose_cheap
@@ -109,6 +114,14 @@ def _build_global_pocket(receptor: Any, cfg: Config) -> Pocket:
     )
 
 
+def _cfg_value(cfg: Optional[Any], key: str, default: Any) -> Any:
+    if cfg is None:
+        return default
+    if isinstance(cfg, dict):
+        return cfg.get(key, default)
+    return getattr(cfg, key, default)
+
+
 def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: str) -> RunResult:
     """Executa o pipeline de docking."""
 
@@ -185,6 +198,98 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
                 pockets = [pocket for pocket, _ in ranked[:max_pockets_used]]
             selected_pockets = len(pockets)
 
+        scan_cfg = _cfg_value(cfg, "scan", None)
+        scan_enabled = bool(_cfg_value(scan_cfg, "enabled", False))
+        scan_results: dict[str, dict[str, float]] = {}
+        scan_selected_ids: list[str] = []
+        scan_params = {
+            "enabled": scan_enabled,
+            "generations": _cfg_value(scan_cfg, "generations", None),
+            "samples_per_pocket": _cfg_value(scan_cfg, "samples_per_pocket", None),
+            "max_pockets_scan": _cfg_value(scan_cfg, "max_pockets_scan", None),
+            "select_top_k": _cfg_value(scan_cfg, "select_top_k", None),
+            "clash_cutoff": _cfg_value(scan_cfg, "clash_cutoff", None),
+            "contact_cutoff": _cfg_value(scan_cfg, "contact_cutoff", None),
+            "max_clash_ratio": _cfg_value(scan_cfg, "max_clash_ratio", None),
+            "seed_offset": _cfg_value(scan_cfg, "seed_offset", None),
+        }
+        scan_start = time.perf_counter()
+        n_pockets_scan = 0
+        if scan_enabled:
+            receptor_coords = _extract_coords(receptor)
+            peptide_coords = _extract_coords(peptide)
+            if receptor_coords.size == 0 or peptide_coords.size == 0:
+                scan_enabled = False
+                scan_params["enabled"] = False
+                debug_logger.log(
+                    {
+                        "type": "scan_disabled",
+                        "reason": "missing_coords",
+                        "receptor_coords_n": int(receptor_coords.shape[0]),
+                        "peptide_coords_n": int(peptide_coords.shape[0]),
+                    }
+                )
+            else:
+                max_pockets_scan = _cfg_value(scan_cfg, "max_pockets_scan", None)
+                if max_pockets_scan is None:
+                    scan_pockets = list(pockets)
+                else:
+                    max_pockets_scan = int(max_pockets_scan)
+                    scan_pockets = list(pockets[: max_pockets_scan])
+                n_pockets_scan = len(scan_pockets)
+                seed_offset = int(_cfg_value(scan_cfg, "seed_offset", 0) or 0)
+                rng = np.random.default_rng(cfg.seed + seed_offset)
+                receptor_kdtree = build_receptor_kdtree(receptor_coords)
+                for pocket in scan_pockets:
+                    metrics = scan_pocket_feasibility(
+                        receptor_kdtree=receptor_kdtree,
+                        peptide_coords=peptide_coords,
+                        pocket=pocket,
+                        cfg_scan=scan_cfg,
+                        rng=rng,
+                    )
+                    scan_results[str(pocket.id)] = metrics
+                    logger.log_metric(
+                        "scan.scan_score",
+                        float(metrics["scan_score"]),
+                        step=0,
+                        extra={"pocket_id": str(pocket.id)},
+                    )
+                    logger.log_metric(
+                        "scan.feasible_fraction",
+                        float(metrics["feasible_fraction"]),
+                        step=0,
+                        extra={"pocket_id": str(pocket.id)},
+                    )
+                    logger.log_metric(
+                        "scan.best_contacts",
+                        float(metrics["best_contacts"]),
+                        step=0,
+                        extra={"pocket_id": str(pocket.id)},
+                    )
+                    logger.log_metric(
+                        "scan.best_clashes",
+                        float(metrics["best_clashes"]),
+                        step=0,
+                        extra={"pocket_id": str(pocket.id)},
+                    )
+                    logger.log_metric(
+                        "scan.clash_ratio_best",
+                        float(metrics["clash_ratio_best"]),
+                        step=0,
+                        extra={"pocket_id": str(pocket.id)},
+                    )
+                top_k = _cfg_value(scan_cfg, "select_top_k", None)
+                pockets = select_pockets_from_scan(scan_pockets, scan_results, top_k)
+                selected_pockets = len(pockets)
+                scan_selected_ids = [str(getattr(pocket, "id", "")) for pocket in pockets]
+        scan_time = time.perf_counter() - scan_start
+
+        logger.log_metric("scan.enabled", 1.0 if scan_enabled else 0.0, step=0)
+        logger.log_metric("scan.n_pockets_scan", float(n_pockets_scan), step=0)
+        logger.log_metric("scan.n_pockets_selected", float(selected_pockets), step=0)
+        logger.log_metric("scan.time_sec", float(scan_time), step=0)
+
         for pocket in pockets:
             if hasattr(pocket, "meta") and pocket.meta is not None:
                 pocket.meta.setdefault("debug_logger", debug_logger)
@@ -240,6 +345,7 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
             "debug_log_enabled": bool(getattr(cfg, "debug_log_enabled", False)),
             "debug_log_path": getattr(cfg, "debug_log_path", None),
             "debug_log_level": getattr(cfg, "debug_log_level", None),
+            "scan": scan_params,
         }
         best_pose_id = result.best_pose.meta.get("pose_id") or result.best_pose.meta.get("id")
 
@@ -278,6 +384,9 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
             config_resolved_subset=config_resolved_subset,
             records=logger.records,
             pockets=pockets,
+            scan_params=scan_params,
+            scan_by_pocket=scan_results,
+            selected_pocket_ids=scan_selected_ids or selected_ids,
         )
         return result
     finally:
@@ -314,6 +423,9 @@ def _write_summary(
     config_resolved_subset: dict[str, Any],
     records: list[dict[str, Any]],
     pockets: list[Pocket],
+    scan_params: dict[str, Any],
+    scan_by_pocket: dict[str, dict[str, float]],
+    selected_pocket_ids: list[str],
 ) -> None:
     expensive_ran = 0.0
     expensive_skipped = 0.0
@@ -365,6 +477,9 @@ def _write_summary(
         "best_cheap_by_pocket": best_cheap_by_pocket,
         "best_expensive_by_pocket": best_expensive_by_pocket,
         "config_resolved_subset": config_resolved_subset,
+        "scan": scan_params,
+        "scan_by_pocket": scan_by_pocket,
+        "selected_pockets": selected_pocket_ids,
     }
     summary_path = os.path.join(out_dir, "summary.json")
     with open(summary_path, "w", encoding="utf-8") as handle:
