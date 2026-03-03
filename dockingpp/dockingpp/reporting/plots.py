@@ -21,12 +21,19 @@ def plot_omega_reduction(series: dict[str, Any], out_png: str | Path) -> None:
     n_filtered = series.get("n_filtered", [])
     n_selected = series.get("n_selected", [])
 
+    n_eval_per_iter = _as_float_list(n_eval_total)
+
+    if _parece_constante(n_eval_per_iter):
+        n_eval_plot = _cumsum(n_eval_per_iter)
+    else:
+        n_eval_plot = n_eval_per_iter
+
     fig, ax = plt.subplots()
-    _plot_linha(ax, xs, n_eval_total, "Ω amostrado (n_eval_total)")
+    _plot_linha(ax, xs, n_eval_plot, "Ω amostrado (n_eval_total)")
     _plot_linha(ax, xs, n_filtered, "Descartadas (n_filtered)")
     _plot_linha(ax, xs, n_selected, "Ω' selecionado (n_selected)")
 
-    kept_ratio = _calcular_ratio(n_selected, n_eval_total)
+    kept_ratio = _calcular_ratio(_as_float_list(n_selected), n_eval_per_iter)
     if kept_ratio:
         ax2 = ax.twinx()
         _plot_linha(ax2, xs, kept_ratio, "kept_ratio", linestyle="--", color="tab:green")
@@ -128,9 +135,16 @@ def _normalizar_para_comparacao(series: dict[str, Any]) -> list[tuple[str, dict[
 
 def _series_x(series: dict[str, Any]) -> list[Any]:
     runtime = series.get("runtime_s", [])
-    if any(valor is not None for valor in runtime):
-        return runtime
-    return series.get("iter", list(range(_comprimento_base(series))))
+    iters = series.get("iter", list(range(_comprimento_base(series))))
+
+    if isinstance(runtime, list) and runtime:
+        runtime_num = [v for v in runtime if isinstance(v, (int, float))]
+        if len(runtime_num) >= 2:
+            distintos = len(set(float(v) for v in runtime_num))
+            if distintos >= 2:
+                if len(runtime) == len(iters):
+                    return runtime
+    return iters
 
 
 def _comprimento_base(series: dict[str, Any]) -> int:
@@ -248,3 +262,36 @@ def _carregar_pyplot() -> "plt":
     except ImportError as exc:  # pragma: no cover - depende do ambiente
         raise RuntimeError("matplotlib não disponível para gerar gráficos.") from exc
     return plt
+
+
+def _as_float_list(vals: Any) -> list[Any]:
+    if not isinstance(vals, list):
+        return []
+    out: list[Any] = []
+    for v in vals:
+        if v is None:
+            out.append(None)
+        elif isinstance(v, (int, float)):
+            out.append(float(v))
+        else:
+            out.append(None)
+    return out
+
+
+def _parece_constante(vals: list[Any]) -> bool:
+    nums = [v for v in vals if isinstance(v, (int, float))]
+    if len(nums) < 3:
+        return False
+    return len(set(nums)) == 1
+
+
+def _cumsum(vals: list[Any]) -> list[Any]:
+    acc = 0.0
+    out: list[Any] = []
+    for v in vals:
+        if isinstance(v, (int, float)):
+            acc += float(v)
+            out.append(acc)
+        else:
+            out.append(None)
+    return out
