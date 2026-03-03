@@ -10,15 +10,15 @@ from typing import Any, Iterable, Literal
 
 _CANDIDATAS_SERIES: dict[str, list[str]] = {
     "iter": ["iter", "generation", "gen", "step"],
-    "best_cheap": ["best_score_cheap", "best_cheap", "best"],
+    "best_cheap": ["best_score_cheap", "best_score", "best_cheap", "best"],
     "best_expensive": ["best_score_expensive", "best_expensive", "best_energy", "vina"],
-    "n_eval_total": ["n_eval_total", "eval_total", "n_scored", "cheap_evals"],
-    "n_filtered": ["n_filtered", "filtered", "discarded"],
-    "n_selected": ["n_selected", "selected", "kept"],
-    "runtime_s": ["runtime_s", "time_s", "elapsed_s"],
-    "expensive_ran": ["expensive_ran", "n_expensive", "expensive_calls"],
-    "pocket_id": ["pocket_id", "pocket"],
-    "pocket_rank": ["pocket_rank", "rank"],
+    "n_eval_total": ["n_eval_total", "n_eval", "eval_total", "n_scored", "cheap_evals"],
+    "n_filtered": ["n_filtered", "filtered", "discarded", "expensive_skipped"],
+    "n_selected": ["n_selected", "selected", "kept", "selected_pockets", "n_pockets_used"],
+    "runtime_s": ["runtime_s", "time_s", "elapsed_s", "total_s", "search_s", "scan.time_sec"],
+    "expensive_ran": ["expensive_ran", "expensive_ran_count", "n_expensive", "expensive_calls"],
+    "pocket_id": ["pocket_id", "pocket", "pocket_index"],
+    "pocket_rank": ["pocket_rank", "rank", "pocket_index"],
 }
 
 RunKind = Literal["full", "reduced", "unknown"]
@@ -137,17 +137,18 @@ def _classify_json_payload(payload: dict[str, Any]) -> str:
 
 def _is_summary_payload(payload: dict[str, Any]) -> bool:
     return bool(
-        isinstance(payload.get("timing"), dict)
-        and payload.get("best_score_cheap") is not None
+        payload.get("run_id") is not None
+        and payload.get("best_cheap_by_pocket") is not None
+        and payload.get("n_eval_total") is not None
         and payload.get("mode") is not None
     )
 
 
 def _is_result_payload(payload: dict[str, Any]) -> bool:
     return bool(
-        payload.get("run_id") is not None
-        and payload.get("best_cheap_by_pocket") is not None
-        and payload.get("n_eval_total") is not None
+        isinstance(payload.get("timing"), dict)
+        and payload.get("best_score_cheap") is not None
+        and payload.get("mode") is not None
     )
 
 

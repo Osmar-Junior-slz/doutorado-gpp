@@ -121,3 +121,21 @@ def test_find_report_runs_full_reduced_pair(tmp_path: Path) -> None:
     assert reduced_run is not None
     assert full_run.kind == "full"
     assert reduced_run.kind == "reduced"
+
+
+def test_extract_series_maps_pipeline_metric_names(tmp_path: Path) -> None:
+    """Garante mapeamento de aliases usados pelo pipeline atual."""
+
+    records = [
+        {"step": 0, "name": "best_score", "value": 1.25, "pocket_index": 0},
+        {"step": 0, "name": "n_eval", "value": 20},
+        {"step": 0, "name": "selected_pockets", "value": 3},
+        {"step": 1, "name": "best_score", "value": 1.75, "pocket_index": 0},
+        {"step": 1, "name": "n_eval", "value": 40},
+    ]
+
+    series = extract_series(records)
+
+    assert series["best_cheap"] == [1.25, None, None, 1.75, None]
+    assert series["n_eval_total"] == [None, 20, None, None, 40]
+    assert series["n_selected"] == [None, None, 3, None, None]
