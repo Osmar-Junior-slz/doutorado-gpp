@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from collections.abc import Sized  # <-- FIX: precisa disso
 from pathlib import Path
 from typing import Any
 
@@ -149,30 +150,38 @@ def _series_x(series: dict[str, Any]) -> list[Any]:
 
 def _comprimento_base(series: dict[str, Any]) -> int:
     for chave, valores in series.items():
-        if chave == "missing":
+        if chave == "missing" or valores is None:
             continue
-        if isinstance(valores, Iterable):
-            return len(list(valores))
+        if isinstance(valores, (str, bytes)):
+            continue
+        if isinstance(valores, Sized):
+            try:
+                return len(valores)
+            except TypeError:
+                pass
     return 0
 
 
+
 def _plot_linha(ax: "plt.Axes", xs: list[Any], ys: list[Any], label: str, **kwargs: Any) -> None:
-    dados = [(x, y) for x, y in zip(xs, ys, strict=False) if y is not None and x is not None]
+    dados = [(x, y) for x, y in zip(xs, ys) if y is not None and x is not None]
     if not dados:
         return
     xs_validos, ys_validos = zip(*dados)
     ax.plot(xs_validos, ys_validos, label=label, **kwargs)
 
 
-def _calcular_ratio(numerador: list[Any], denominador: list[Any]) -> list[float]:
-    ratio: list[float] = []
-    for num, den in zip(numerador, denominador, strict=False):
+
+def _calcular_ratio(numerador: list[Any], denominador: list[Any]) -> list[float | None]:
+    ratio: list[float | None] = []
+    for num, den in zip(numerador, denominador):
         if num is None or den is None:
-            ratio.append(None)  # type: ignore[arg-type]
+            ratio.append(None)
             continue
         den_val = float(den)
         ratio.append(float(num) / max(den_val, 1.0))
     return ratio
+
 
 
 def _pontos_expensive(series: dict[str, Any], xs: list[Any]) -> list[Any]:
@@ -190,8 +199,9 @@ def _pontos_expensive(series: dict[str, Any], xs: list[Any]) -> list[Any]:
 
 
 def _filtrar_por_x(xs: list[Any], ys: list[Any], xs_alvo: list[Any]) -> list[Any]:
-    mapa = {x: y for x, y in zip(xs, ys, strict=False)}
+    mapa = {x: y for x, y in zip(xs, ys)}
     return [mapa.get(x) for x in xs_alvo]
+
 
 
 def _agregar_por_pocket(eventos: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
