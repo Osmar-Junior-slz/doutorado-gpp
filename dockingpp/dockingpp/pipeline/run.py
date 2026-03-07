@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional
 
@@ -13,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from dockingpp.data.io import load_peptide, load_pockets, load_receptor
 from dockingpp.data.structs import Pocket, RunResult
-from dockingpp.pipeline.logging import RunLogger
+from dockingpp.pipeline.logging import AuditTracer, RunLogger
 from dockingpp.pipeline.scan import (
     build_receptor_kdtree,
     scan_pocket_feasibility,
@@ -53,6 +54,12 @@ class Config(BaseModel):
     debug_log_enabled: bool = False
     debug_log_path: Optional[str] = None
     debug_log_level: str = "INFO"
+    debug_enabled: bool = True
+    debug_level: str = "AUDIT"
+    debug_dirname: str = "debug"
+    trace_generation_interval: int = 1
+    trace_score_interval: int = 1
+    trace_write_jsonl: bool = True
 
     class Config:
         extra = "allow"
@@ -204,6 +211,8 @@ def _execute_single_run(
     scan_params: dict[str, Any],
     scan_results: dict[str, dict[str, float]],
     selected_pocket_ids: list[str],
+    tracer: AuditTracer | None = None,
+    pocket_id: str | None = None,
 ) -> tuple[RunResult, dict[str, Any], RunLogger]:
     os.makedirs(out_dir, exist_ok=True)
     logger = RunLogger(out_dir=out_dir, live_write=True)
@@ -212,6 +221,8 @@ def _execute_single_run(
     prior_pocket = PriorNetPocket()
     prior_pose = PriorNetPose()
 
+    if tracer is not None:
+        tracer.event(stage="search", substage="start", event_type="search_started", payload={"pocket_id": pocket_id, "engine_name": "ABCGAVGOSSearch", "generations": int(cfg.generations), "pop_size": int(cfg.pop_size)}, engine="ABCGAVGOSSearch", pocket_id=pocket_id, level="BASIC")
     start_search = time.perf_counter()
     result = search.search(
         receptor=receptor,
@@ -225,6 +236,8 @@ def _execute_single_run(
         logger=logger,
     )
     end_search = time.perf_counter()
+    if tracer is not None:
+        tracer.event(stage="search", substage="end", event_type="generation_completed", payload={"pocket_id": pocket_id, "runtime_sec": float(end_search-start_search)}, engine="ABCGAVGOSSearch", pocket_id=pocket_id, level="TRACE")
 
     config_resolved_subset = {
         "seed": cfg.seed,
@@ -261,8 +274,11 @@ def _execute_single_run(
         scan_time=scan_time,
         search_time=end_search - start_search,
     )
-    with open(os.path.join(out_dir, "result.json"), "w", encoding="utf-8") as handle:
+    result_path = os.path.join(out_dir, "result.json")
+    with open(result_path, "w", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, indent=2))
+    if tracer is not None:
+        tracer.artifact_written(result_path)
 
     logger.flush(out_dir)
     logger.flush_timeseries(out_dir, mode=search_space_mode)
@@ -289,13 +305,16 @@ def _execute_single_run(
         scan_by_pocket=scan_results,
         selected_pocket_ids=selected_pocket_ids,
     )
+    if tracer is not None:
+        tracer.artifact_written(os.path.join(out_dir, "summary.json"))
+        tracer.event(stage="summary", event_type="run_finished", payload={"status": "success", "best_score_cheap": result.best_pose.score_cheap, "best_score_expensive": result.best_pose.score_expensive}, level="BASIC", pocket_id=pocket_id)
     return result, payload, logger
 
 
 def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: str) -> RunResult:
     """Executa o pipeline de docking."""
 
-    run_id = datetime.utcnow().isoformat() + "Z"
+    run_id = f"run-{uuid.uuid4().hex[:12]}"
     np.random.seed(cfg.seed)
     os.makedirs(out_dir, exist_ok=True)
     debug_log_enabled = bool(getattr(cfg, "debug_log_enabled", False))
@@ -304,6 +323,25 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
     debug_logger = DebugLogger(enabled=debug_log_enabled, path=debug_log_path, level=debug_log_level)
     debug_logger.run_id = run_id
     cfg.debug_logger = debug_logger
+    tracer = AuditTracer(
+        out_dir=out_dir,
+        run_id=run_id,
+        debug_enabled=bool(getattr(cfg, "debug_enabled", True)),
+        debug_level=str(getattr(cfg, "debug_level", "AUDIT")),
+        debug_dirname=str(getattr(cfg, "debug_dirname", "debug")),
+        search_space_mode=str(getattr(cfg, "search_space_mode", "full")),
+    )
+    cfg.audit_tracer = tracer
+    tracer.start_run(
+        {
+            "receptor_path": receptor_path,
+            "peptide_path": peptide_path,
+            "out_dir": out_dir,
+            "seed": int(cfg.seed),
+            "debug_enabled": bool(getattr(cfg, "debug_enabled", True)),
+            "debug_level": str(getattr(cfg, "debug_level", "AUDIT")),
+        }
+    )
 
     try:
         if receptor_path == "__dummy__" and peptide_path == "__dummy__":
@@ -312,6 +350,7 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
             receptor = load_receptor(receptor_path)
             peptide = load_peptide(peptide_path)
             dummy_pockets = []
+        tracer.event(stage="io", event_type="inputs_loaded", payload={"receptor_atoms": int(_extract_coords(receptor).shape[0]), "peptide_atoms": int(_extract_coords(peptide).shape[0])}, level="BASIC")
 
         search_space_mode = _normalize_search_space_mode(
             getattr(cfg, "search_space_mode", None),
@@ -319,6 +358,10 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
         )
         cfg.search_space_mode = search_space_mode
         cfg.full_search = search_space_mode == "full"
+        tracer.search_space_mode = search_space_mode
+        tracer.event(stage="config", event_type="config_loaded", substage="raw", payload={"requested_mode": getattr(cfg, "search_space_mode", None), "budget_policy": getattr(cfg, "budget_policy", "split")}, level="BASIC")
+        tracer.event(stage="config", event_type="config_normalized", substage="mode", payload={"search_space_mode": search_space_mode, "full_search": bool(cfg.full_search), "compare_policy": "best_pocket_vs_full"}, level="BASIC", decision=True)
+        debug_logger.log({"type": "config_resolved", "search_space_mode": search_space_mode})
 
         pocketing_start = time.perf_counter()
         if search_space_mode == "full":
@@ -337,6 +380,8 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
             if top_pockets > 0:
                 pockets = pockets[:top_pockets]
         pocketing_time = time.perf_counter() - pocketing_start
+        tracer.event(stage="pocket_filter", event_type="pocket_selected", payload={"selected_pockets": [str(p.id) for p in pockets], "n_pockets_total": int(total_pockets)}, level="BASIC", decision=True)
+        debug_logger.log({"type": "pocket_selection", "selected": [str(p.id) for p in pockets], "n_total": int(total_pockets)})
 
         scan_cfg = _cfg_value(cfg, "scan", None)
         scan_enabled = bool(_cfg_value(scan_cfg, "enabled", False)) and search_space_mode == "reduced"
@@ -358,7 +403,7 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
         scan_time = time.perf_counter() - scan_start
 
         if search_space_mode == "full":
-            result, _, _ = _execute_single_run(
+            result, _, logger_single = _execute_single_run(
                 cfg=cfg,
                 receptor=receptor,
                 peptide=peptide,
@@ -375,7 +420,34 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
                 scan_params=scan_params,
                 scan_results=scan_results,
                 selected_pocket_ids=[str(p.id) for p in pockets],
+                tracer=tracer,
+                pocket_id="global",
             )
+            _write_debug_summary(tracer, {
+                "success": True,
+                "requested_mode": "full",
+                "executed_mode": "full",
+                "search_space_mode": "full",
+                "budget_policy": str(getattr(cfg, "budget_policy", "split")),
+                "compare_policy": "best_pocket_vs_full",
+                "fallback_to_full": False,
+                "fallback_reason": None,
+                "total_runtime_sec": None,
+                "total_n_eval": int(sum(float(r.get("value", 0.0)) for r in logger_single.records if r.get("name") == "n_eval")),
+                "best_score_cheap": result.best_pose.score_cheap,
+                "best_score_expensive": result.best_pose.score_expensive,
+                "best_pocket_id": result.best_pose.meta.get("pocket_id"),
+                "n_pockets_total": total_pockets,
+                "n_pockets_used": len(pockets),
+                "total_eval_budget_requested": int(cfg.generations) * int(cfg.pop_size),
+                "total_eval_budget_assigned": int(cfg.generations) * int(cfg.pop_size),
+                "budget_delta": 0,
+                "budget_rounding_applied": False,
+                "warnings_count": tracer.warnings_count,
+                "errors_count": tracer.errors_count,
+                "selected_pockets": [str(p.id) for p in pockets],
+                "rejected_pockets": [],
+            })
             return result
 
         max_clash_ratio = float(_cfg_value(scan_cfg, "max_clash_ratio", 0.02) or 0.02)
@@ -387,15 +459,19 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
             clash_ratio_best = float(metrics.get("clash_ratio_best", 0.0))
             if feasible_fraction <= 0.0:
                 rejected.append({"pocket_id": pocket.id, "reason": "feasible_fraction<=0.0"})
+                tracer.event(stage="pocket_filter", event_type="pocket_rejected", payload={"reason": "feasible_fraction<=0.0", "feasible_fraction": feasible_fraction}, pocket_id=str(pocket.id), level="TRACE", decision=True)
                 continue
             if clash_ratio_best > max_clash_ratio:
                 rejected.append({"pocket_id": pocket.id, "reason": "clash_ratio_best>max_clash_ratio"})
+                tracer.event(stage="pocket_filter", event_type="pocket_rejected", payload={"reason": "clash_ratio_best>max_clash_ratio", "clash_ratio_best": clash_ratio_best, "max_clash_ratio": max_clash_ratio}, pocket_id=str(pocket.id), level="TRACE", decision=True)
                 continue
             feasible_pockets.append((idx, pocket))
 
         if not feasible_pockets:
+            tracer.event(stage="budget", event_type="budget_split", payload={"total_eval_budget_requested": int(cfg.generations) * int(cfg.pop_size), "n_pockets": 0, "allocations": []}, level="TRACE", decision=True)
+            tracer.event(stage="pocket_filter", event_type="fallback_triggered", payload={"reason": "no_feasible_pocket"}, level="BASIC", decision=True)
             fallback_dir = os.path.join(out_dir, "fallback_full")
-            full_cfg = cfg.model_copy(deep=True)
+            full_cfg = Config(**cfg.model_dump())
             full_cfg.search_space_mode = "full"
             full_cfg.full_search = True
             full_pockets = [_build_global_pocket(receptor, full_cfg)]
@@ -416,6 +492,8 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
                 scan_params=scan_params,
                 scan_results=scan_results,
                 selected_pocket_ids=["global"],
+                tracer=tracer,
+                pocket_id="global",
             )
             requested_budget = int(cfg.generations) * int(cfg.pop_size)
             assigned_budget = int(full_cfg.generations) * int(full_cfg.pop_size)
@@ -449,12 +527,38 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
                 handle.write(json.dumps(parent_summary, indent=2))
             with open(os.path.join(out_dir, "result.json"), "w", encoding="utf-8") as handle:
                 handle.write(json.dumps(parent_summary, indent=2))
+            _write_debug_summary(tracer, {
+                "success": True,
+                "requested_mode": "reduced",
+                "executed_mode": "full",
+                "search_space_mode": "reduced",
+                "budget_policy": str(getattr(cfg, "budget_policy", "split")),
+                "compare_policy": "best_pocket_vs_full",
+                "fallback_to_full": True,
+                "fallback_reason": "no_feasible_pocket",
+                "total_runtime_sec": float(full_payload.get("runtime_sec", 0.0)),
+                "total_n_eval": int(sum(float(r.get("value", 0.0)) for r in full_logger.records if r.get("name") == "n_eval")),
+                "best_score_cheap": result.best_pose.score_cheap,
+                "best_score_expensive": result.best_pose.score_expensive,
+                "best_pocket_id": "global",
+                "n_pockets_total": total_pockets,
+                "n_pockets_used": 0,
+                "total_eval_budget_requested": requested_budget,
+                "total_eval_budget_assigned": assigned_budget,
+                "budget_delta": int(assigned_budget - requested_budget),
+                "budget_rounding_applied": bool(assigned_budget != requested_budget),
+                "warnings_count": tracer.warnings_count,
+                "errors_count": tracer.errors_count,
+                "selected_pockets": [],
+                "rejected_pockets": rejected,
+            })
             return result
 
         budget_policy = str(getattr(cfg, "budget_policy", "split") or "split").lower()
         if budget_policy not in {"split", "replicated"}:
             budget_policy = "split"
         budgets = _allocate_split_budget(cfg.generations, cfg.pop_size, len(feasible_pockets))
+        tracer.event(stage="budget", event_type="budget_split", payload={"total_eval_budget_requested": int(cfg.generations) * int(cfg.pop_size), "n_pockets": len(feasible_pockets), "allocations": [{"pocket_id": str(p.id), "generations": int(b[0]), "pop_size": int(b[1])} for (_, p), b in zip(feasible_pockets, budgets)]}, level="TRACE", decision=True)
 
         per_pocket_results = []
         total_runtime_sec = 0.0
@@ -468,7 +572,7 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
         best_pocket_id = None
 
         for local_idx, (original_idx, pocket) in enumerate(feasible_pockets):
-            pocket_cfg = cfg.model_copy(deep=True)
+            pocket_cfg = Config(**cfg.model_dump())
             pocket_cfg.search_space_mode = "reduced"
             pocket_cfg.full_search = False
             if budget_policy == "split":
@@ -493,6 +597,8 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
                 scan_params=scan_params,
                 scan_results={str(pocket.id): scan_results.get(str(pocket.id), {})},
                 selected_pocket_ids=[str(pocket.id)],
+                tracer=tracer,
+                pocket_id=str(pocket.id),
             )
             runtime = float(payload.get("runtime_sec", 0.0))
             n_eval = int(sum(float(r.get("value", 0.0)) for r in logger.records if r.get("name") == "n_eval"))
@@ -560,11 +666,84 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
             for idx, item in enumerate(per_pocket_results):
                 handle.write(json.dumps({"step": idx, "pocket_id": item["pocket_id"], "best_score_cheap": item["best_score_cheap"], "n_eval_cumulative": sum(x["n_eval_total"] for x in per_pocket_results[: idx + 1])}) + "\n")
 
+        _write_debug_summary(tracer, {
+            "success": True,
+            "requested_mode": "reduced",
+            "executed_mode": "reduced",
+            "search_space_mode": "reduced",
+            "budget_policy": budget_policy,
+            "compare_policy": "best_pocket_vs_full",
+            "fallback_to_full": False,
+            "fallback_reason": None,
+            "total_runtime_sec": total_runtime_sec,
+            "total_n_eval": total_n_eval,
+            "best_score_cheap": None if best_result is None else best_result.best_pose.score_cheap,
+            "best_score_expensive": best_expensive,
+            "best_pocket_id": best_pocket_id,
+            "n_pockets_total": total_pockets,
+            "n_pockets_used": len(feasible_pockets),
+            "total_eval_budget_requested": total_eval_budget_requested,
+            "total_eval_budget_assigned": total_eval_budget_assigned,
+            "budget_delta": budget_delta,
+            "budget_rounding_applied": budget_rounding_applied,
+            "warnings_count": tracer.warnings_count,
+            "errors_count": tracer.errors_count,
+            "selected_pockets": [str(p.id) for _, p in feasible_pockets],
+            "rejected_pockets": rejected,
+        })
+        for item in per_pocket_results:
+            pocket_trace = {
+                "success": True,
+                "requested_mode": "reduced",
+                "executed_mode": "reduced",
+                "search_space_mode": "reduced",
+                "best_score_cheap": item["best_score_cheap"],
+                "best_score_expensive": item["best_score_expensive"],
+                "best_pocket_id": item["pocket_id"],
+            }
+            tracer.write_summary(pocket_trace, rel_path=f"pockets/{item['pocket_id']}/debug_summary.json")
+            for rel in (f"pockets/{item['pocket_id']}/trace.jsonl", f"pockets/{item['pocket_id']}/decision_trace.jsonl"):
+                abs_path = os.path.join(tracer.debug_dir, rel)
+                os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+                if not os.path.exists(abs_path):
+                    with open(abs_path, "w", encoding="utf-8") as handle:
+                        handle.write("")
+                tracer._mark_file(rel)
+
         if best_result is None:
             raise ValueError("Reduced aggregate produced no result.")
         return best_result
+    except Exception as exc:
+        tracer.error(stage="summary", message="pipeline_exception", payload={"error": type(exc).__name__})
+        raise
     finally:
+        manifest = {
+            "requested_mode": str(getattr(cfg, "search_space_mode", "full")),
+            "executed_mode": str(getattr(cfg, "search_space_mode", "full")),
+            "search_space_mode": str(getattr(cfg, "search_space_mode", "full")),
+            "budget_policy": str(getattr(cfg, "budget_policy", "split")),
+            "compare_policy": "best_pocket_vs_full",
+            "fallback_to_full": False,
+            "fallback_reason": None,
+            "debug_enabled": bool(getattr(cfg, "debug_enabled", True)),
+            "debug_level": str(getattr(cfg, "debug_level", "AUDIT")),
+            "out_dir": out_dir,
+            "debug_dir": tracer.debug_dir,
+        }
+        tracer.finish_run(manifest=manifest, status_final="finished")
         debug_logger.close()
+
+
+
+def _write_debug_summary(tracer: AuditTracer, payload: dict[str, Any], rel_path: str = "debug_summary.json") -> None:
+    if not tracer.enabled:
+        return
+    data = {
+        "schema_version": "1.0",
+        "run_id": tracer.run_id,
+        **payload,
+    }
+    tracer.write_summary(data, rel_path=rel_path)
 
 def _safe_float(value: Any) -> float | None:
     if value is None:
