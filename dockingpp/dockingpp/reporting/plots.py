@@ -193,14 +193,23 @@ def plot_pocket_rank_effect(events_or_series: list[dict[str, Any]] | dict[str, A
     """Agrega efeito do ranking de pockets."""
 
     plt = _carregar_pyplot()
-    eventos = events_or_series if isinstance(events_or_series, list) else []
-    agregados = _agregar_por_pocket(eventos)
-    pockets = list(agregados.keys())
-    n_eval = [agregados[pocket]["n_eval_total"] for pocket in pockets]
-    best_cheap = [agregados[pocket]["best_cheap"] for pocket in pockets]
+    if isinstance(events_or_series, dict) and events_or_series.get("mode") == "reduced_aggregate":
+        per_pocket = events_or_series.get("per_pocket_results", [])
+        pockets = [str(item.get("pocket_id")) for item in per_pocket]
+        n_eval = [float(item.get("n_eval_total", 0.0)) for item in per_pocket]
+        best_cheap = [item.get("best_score_cheap") for item in per_pocket]
+        best_pocket = events_or_series.get("best_pocket_id")
+    else:
+        eventos = events_or_series if isinstance(events_or_series, list) else []
+        agregados = _agregar_por_pocket(eventos)
+        pockets = list(agregados.keys())
+        n_eval = [agregados[pocket]["n_eval_total"] for pocket in pockets]
+        best_cheap = [agregados[pocket]["best_cheap"] for pocket in pockets]
+        best_pocket = None
 
     fig, ax = plt.subplots()
-    ax.bar(pockets, n_eval, label="n_eval_total", alpha=0.6)
+    colors = ["tab:red" if best_pocket is not None and pocket == str(best_pocket) else "tab:blue" for pocket in pockets]
+    ax.bar(pockets, n_eval, label="n_eval_total", alpha=0.6, color=colors)
     ax.set_xlabel("Pocket rank/id")
     ax.set_ylabel("n_eval_total")
 

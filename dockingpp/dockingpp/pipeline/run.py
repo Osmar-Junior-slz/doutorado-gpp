@@ -48,7 +48,8 @@ class Config(BaseModel):
     top_pockets: int = 3
     full_search: bool = True
     max_pockets_used: int = 8
-    search_space_mode: str = "global"
+    search_space_mode: str = "full"
+    budget_policy: str = "split"
     debug_log_enabled: bool = False
     debug_log_path: Optional[str] = None
     debug_log_level: str = "INFO"
@@ -122,14 +123,180 @@ def _cfg_value(cfg: Optional[Any], key: str, default: Any) -> Any:
     return getattr(cfg, key, default)
 
 
+def _normalize_search_space_mode(search_space_mode: str | None, full_search: bool) -> str:
+    raw = (search_space_mode or "").strip().lower()
+    if raw in {"full", "reduced"}:
+        return raw
+    if raw == "global":
+        return "full"
+    if raw == "pockets":
+        return "reduced"
+    return "full" if full_search else "reduced"
+
+
+def _build_run_payload(
+    run_id: str,
+    mode: str,
+    search_space_mode: str,
+    runtime_sec: float,
+    total_pockets: int,
+    selected_pockets: int,
+    best_score_cheap: float | None,
+    best_score_expensive: float | None,
+    best_pose_id: str | None,
+    config_resolved_subset: dict[str, Any],
+    pocketing_time: float,
+    scan_time: float,
+    search_time: float,
+) -> dict[str, Any]:
+    return {
+        "schema_version": "2.0",
+        "mode": mode,
+        "run_id": run_id,
+        "best_score_cheap": best_score_cheap,
+        "best_score_expensive": best_score_expensive,
+        "best_pose_id": best_pose_id,
+        "n_pockets_detected": total_pockets,
+        "n_pockets_used": selected_pockets,
+        "search_space_mode": search_space_mode,
+        "runtime_sec": runtime_sec,
+        "config_resolved_subset": config_resolved_subset,
+        "timing": {
+            "total_s": runtime_sec,
+            "scoring_cheap_s": None,
+            "scoring_expensive_s": None,
+            "pocketing_s": pocketing_time,
+            "scan_s": scan_time,
+            "search_s": search_time,
+        },
+    }
+
+
+def _allocate_split_budget(total_generations: int, total_pop_size: int, n_pockets: int) -> list[tuple[int, int]]:
+    if n_pockets <= 0:
+        return []
+    total_eval = max(1, int(total_generations) * int(total_pop_size))
+    base = total_eval // n_pockets
+    rem = total_eval % n_pockets
+    budgets: list[tuple[int, int]] = []
+    for idx in range(n_pockets):
+        eval_budget = base + (1 if idx < rem else 0)
+        pop_size = max(1, min(int(total_pop_size), int(eval_budget)))
+        generations = max(1, int(eval_budget) // pop_size)
+        budgets.append((generations, pop_size))
+    return budgets
+
+
+def _execute_single_run(
+    cfg: Config,
+    receptor: Any,
+    peptide: Any,
+    pockets: list[Pocket],
+    out_dir: str,
+    run_id: str,
+    receptor_path: str,
+    peptide_path: str,
+    search_space_mode: str,
+    total_pockets: int,
+    selected_pockets: int,
+    pocketing_time: float,
+    scan_time: float,
+    scan_params: dict[str, Any],
+    scan_results: dict[str, dict[str, float]],
+    selected_pocket_ids: list[str],
+) -> tuple[RunResult, dict[str, Any], RunLogger]:
+    os.makedirs(out_dir, exist_ok=True)
+    logger = RunLogger(out_dir=out_dir, live_write=True)
+    cfg.expensive_logger = logger
+    search = ABCGAVGOSSearch(cfg)
+    prior_pocket = PriorNetPocket()
+    prior_pose = PriorNetPose()
+
+    start_search = time.perf_counter()
+    result = search.search(
+        receptor=receptor,
+        peptide=peptide,
+        pockets=pockets,
+        cfg=cfg,
+        score_cheap_fn=score_pose_cheap,
+        score_expensive_fn=score_pose_expensive,
+        prior_pocket=prior_pocket,
+        prior_pose=prior_pose,
+        logger=logger,
+    )
+    end_search = time.perf_counter()
+
+    config_resolved_subset = {
+        "seed": cfg.seed,
+        "generations": cfg.generations,
+        "pop_size": cfg.pop_size,
+        "topk": cfg.topk,
+        "search_space_mode": search_space_mode,
+        "full_search": bool(getattr(cfg, "full_search", True)),
+        "top_pockets": int(getattr(cfg, "top_pockets", 0) or 0),
+        "max_pockets_used": int(getattr(cfg, "max_pockets_used", 0) or 0),
+        "expensive_every": int(getattr(cfg, "expensive_every", 0) or 0),
+        "expensive_topk": getattr(cfg, "expensive_topk", None),
+        "debug_log_enabled": bool(getattr(cfg, "debug_log_enabled", False)),
+        "debug_log_path": getattr(cfg, "debug_log_path", None),
+        "debug_log_level": getattr(cfg, "debug_log_level", None),
+        "scan": scan_params,
+        "budget_policy": getattr(cfg, "budget_policy", "split"),
+    }
+    best_pose_id = result.best_pose.meta.get("pose_id") or result.best_pose.meta.get("id")
+    runtime_sec = pocketing_time + scan_time + (end_search - start_search)
+
+    payload = _build_run_payload(
+        run_id=run_id,
+        mode="single",
+        search_space_mode=search_space_mode,
+        runtime_sec=runtime_sec,
+        total_pockets=total_pockets,
+        selected_pockets=selected_pockets,
+        best_score_cheap=result.best_pose.score_cheap,
+        best_score_expensive=result.best_pose.score_expensive,
+        best_pose_id=best_pose_id,
+        config_resolved_subset=config_resolved_subset,
+        pocketing_time=pocketing_time,
+        scan_time=scan_time,
+        search_time=end_search - start_search,
+    )
+    with open(os.path.join(out_dir, "result.json"), "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, indent=2))
+
+    logger.flush(out_dir)
+    logger.flush_timeseries(out_dir, mode=search_space_mode)
+    _write_summary(
+        out_dir=out_dir,
+        run_id=run_id,
+        mode="single",
+        receptor_path=receptor_path,
+        peptide_path=peptide_path,
+        search_space_mode=search_space_mode,
+        runtime_sec=runtime_sec,
+        search_time_sec=end_search - start_search,
+        pocketing_sec=pocketing_time,
+        scan_sec=scan_time,
+        total_pockets=total_pockets,
+        selected_pockets=selected_pockets,
+        best_score_cheap=result.best_pose.score_cheap,
+        best_score_expensive=result.best_pose.score_expensive,
+        best_pose_pocket_id=result.best_pose.meta.get("pocket_id"),
+        config_resolved_subset=config_resolved_subset,
+        records=logger.records,
+        pockets=pockets,
+        scan_params=scan_params,
+        scan_by_pocket=scan_results,
+        selected_pocket_ids=selected_pocket_ids,
+    )
+    return result, payload, logger
+
+
 def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: str) -> RunResult:
     """Executa o pipeline de docking."""
 
     run_id = datetime.utcnow().isoformat() + "Z"
-    start_total = time.perf_counter()
     np.random.seed(cfg.seed)
-    # PT-BR: criamos o diretório antes do logger para permitir escrita incremental
-    # do metrics.jsonl, evitando que a UI só veja progresso no final.
     os.makedirs(out_dir, exist_ok=True)
     debug_log_enabled = bool(getattr(cfg, "debug_log_enabled", False))
     debug_log_path = getattr(cfg, "debug_log_path", None) or os.path.join(out_dir, "debug", "debug.jsonl")
@@ -137,20 +304,6 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
     debug_logger = DebugLogger(enabled=debug_log_enabled, path=debug_log_path, level=debug_log_level)
     debug_logger.run_id = run_id
     cfg.debug_logger = debug_logger
-
-    config_mode = "full" if getattr(cfg, "full_search", True) else "reduced"
-    debug_logger.log(
-        {
-            "type": "config_resolved",
-            "mode": config_mode,
-            "search_space_mode": getattr(cfg, "search_space_mode", None),
-            "full_search": bool(getattr(cfg, "full_search", True)),
-            "top_pockets": getattr(cfg, "top_pockets", None),
-            "max_pockets_used": getattr(cfg, "max_pockets_used", None),
-            "generations": getattr(cfg, "generations", None),
-            "pop_size": getattr(cfg, "pop_size", None),
-        }
-    )
 
     try:
         if receptor_path == "__dummy__" and peptide_path == "__dummy__":
@@ -160,255 +313,258 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
             peptide = load_peptide(peptide_path)
             dummy_pockets = []
 
-        # PT-BR: live_write=True garante métricas disponíveis durante a execução.
-        # As métricas por geração incluem "generation" (0..N) para a UI calcular
-        # progresso correto; o "step" permanece como contador global para séries.
-        logger = RunLogger(out_dir=out_dir, live_write=True)
-        cfg.expensive_logger = logger
-        search_scope_mode = getattr(cfg, "search_space_mode", "global")
-        search_space_mode = "full" if getattr(cfg, "full_search", True) else "reduced"
+        search_space_mode = _normalize_search_space_mode(
+            getattr(cfg, "search_space_mode", None),
+            bool(getattr(cfg, "full_search", True)),
+        )
+        cfg.search_space_mode = search_space_mode
+        cfg.full_search = search_space_mode == "full"
+
         pocketing_start = time.perf_counter()
-        if search_scope_mode == "global":
+        if search_space_mode == "full":
             pockets = [_build_global_pocket(receptor, cfg)]
             total_pockets = 1
-            selected_pockets = 1
         else:
             pockets = dummy_pockets or load_pockets(
                 receptor,
                 cfg=cfg,
                 pockets_path=getattr(cfg, "pockets_path", None),
             )
-            total_pockets = len(pockets)
             ranked = rank_pockets(receptor, pockets, peptide=peptide, debug_logger=debug_logger)
-            if not ranked:
-                global_pockets = [pocket for pocket in pockets if getattr(pocket, "id", None) == "global"]
-                pockets = global_pockets or pockets
-            elif not getattr(cfg, "full_search", True):
-                # PT-BR: o erro anterior ocorria quando o "reduced" ainda varria todos
-                # os pockets na busca. Aqui limitamos explicitamente aos top_pockets,
-                # garantindo que o espaço de busca seja reduzido de fato.
-                top_pockets = int(getattr(cfg, "top_pockets", len(ranked)) or 0)
-                if top_pockets <= 0:
-                    pockets = [pocket for pocket, _ in ranked]
-                elif total_pockets > top_pockets:
-                    pockets = [pocket for pocket, _ in ranked[:top_pockets]]
-                else:
-                    pockets = [pocket for pocket, _ in ranked]
-            else:
-                max_pockets_used = int(getattr(cfg, "max_pockets_used", 8) or 0)
-                if max_pockets_used <= 0:
-                    max_pockets_used = len(ranked)
-                pockets = [pocket for pocket, _ in ranked[:max_pockets_used]]
-            selected_pockets = len(pockets)
+            pockets = [p for p, _ in ranked] if ranked else pockets
+            total_pockets = len(pockets)
+            top_pockets = int(getattr(cfg, "top_pockets", len(pockets)) or len(pockets))
+            if top_pockets > 0:
+                pockets = pockets[:top_pockets]
         pocketing_time = time.perf_counter() - pocketing_start
 
         scan_cfg = _cfg_value(cfg, "scan", None)
-        scan_enabled = bool(_cfg_value(scan_cfg, "enabled", False))
+        scan_enabled = bool(_cfg_value(scan_cfg, "enabled", False)) and search_space_mode == "reduced"
         scan_results: dict[str, dict[str, float]] = {}
-        scan_selected_ids: list[str] = []
         scan_params = {
             "enabled": scan_enabled,
-            "generations": _cfg_value(scan_cfg, "generations", None),
-            "samples_per_pocket": _cfg_value(scan_cfg, "samples_per_pocket", None),
-            "max_pockets_scan": _cfg_value(scan_cfg, "max_pockets_scan", None),
-            "select_top_k": _cfg_value(scan_cfg, "select_top_k", None),
-            "clash_cutoff": _cfg_value(scan_cfg, "clash_cutoff", None),
-            "contact_cutoff": _cfg_value(scan_cfg, "contact_cutoff", None),
             "max_clash_ratio": _cfg_value(scan_cfg, "max_clash_ratio", None),
-            "seed_offset": _cfg_value(scan_cfg, "seed_offset", None),
+            "select_top_k": _cfg_value(scan_cfg, "select_top_k", None),
         }
         scan_start = time.perf_counter()
-        n_pockets_scan = 0
-        if scan_enabled:
+        if scan_enabled and pockets:
             receptor_coords = _extract_coords(receptor)
             peptide_coords = _extract_coords(peptide)
-            if receptor_coords.size == 0 or peptide_coords.size == 0:
-                scan_enabled = False
-                scan_params["enabled"] = False
-                debug_logger.log(
-                    {
-                        "type": "scan_disabled",
-                        "reason": "missing_coords",
-                        "receptor_coords_n": int(receptor_coords.shape[0]),
-                        "peptide_coords_n": int(peptide_coords.shape[0]),
-                    }
-                )
-            else:
-                max_pockets_scan = _cfg_value(scan_cfg, "max_pockets_scan", None)
-                if max_pockets_scan is None:
-                    scan_pockets = list(pockets)
-                else:
-                    max_pockets_scan = int(max_pockets_scan)
-                    scan_pockets = list(pockets[: max_pockets_scan])
-                n_pockets_scan = len(scan_pockets)
-                seed_offset = int(_cfg_value(scan_cfg, "seed_offset", 0) or 0)
-                rng = np.random.default_rng(cfg.seed + seed_offset)
-                receptor_kdtree = build_receptor_kdtree(receptor_coords)
-                for pocket in scan_pockets:
-                    metrics = scan_pocket_feasibility(
-                        receptor_kdtree=receptor_kdtree,
-                        peptide_coords=peptide_coords,
-                        pocket=pocket,
-                        cfg_scan=scan_cfg,
-                        rng=rng,
-                    )
-                    scan_results[str(pocket.id)] = metrics
-                    logger.log_metric(
-                        "scan.scan_score",
-                        float(metrics["scan_score"]),
-                        step=0,
-                        extra={"pocket_id": str(pocket.id)},
-                    )
-                    logger.log_metric(
-                        "scan.feasible_fraction",
-                        float(metrics["feasible_fraction"]),
-                        step=0,
-                        extra={"pocket_id": str(pocket.id)},
-                    )
-                    logger.log_metric(
-                        "scan.best_contacts",
-                        float(metrics["best_contacts"]),
-                        step=0,
-                        extra={"pocket_id": str(pocket.id)},
-                    )
-                    logger.log_metric(
-                        "scan.best_clashes",
-                        float(metrics["best_clashes"]),
-                        step=0,
-                        extra={"pocket_id": str(pocket.id)},
-                    )
-                    logger.log_metric(
-                        "scan.clash_ratio_best",
-                        float(metrics["clash_ratio_best"]),
-                        step=0,
-                        extra={"pocket_id": str(pocket.id)},
-                    )
-                top_k = _cfg_value(scan_cfg, "select_top_k", None)
-                pockets = select_pockets_from_scan(scan_pockets, scan_results, top_k)
-                selected_pockets = len(pockets)
-                scan_selected_ids = [str(getattr(pocket, "id", "")) for pocket in pockets]
+            receptor_kdtree = build_receptor_kdtree(receptor_coords)
+            rng = np.random.default_rng(cfg.seed + int(_cfg_value(scan_cfg, "seed_offset", 0) or 0))
+            for pocket in pockets:
+                scan_results[str(pocket.id)] = scan_pocket_feasibility(receptor_kdtree, peptide_coords, pocket, scan_cfg, rng)
+            pockets = select_pockets_from_scan(pockets, scan_results, _cfg_value(scan_cfg, "select_top_k", None))
         scan_time = time.perf_counter() - scan_start
 
-        logger.log_metric("scan.enabled", 1.0 if scan_enabled else 0.0, step=0)
-        logger.log_metric("scan.n_pockets_scan", float(n_pockets_scan), step=0)
-        logger.log_metric("scan.n_pockets_selected", float(selected_pockets), step=0)
-        logger.log_metric("scan.time_sec", float(scan_time), step=0)
+        if search_space_mode == "full":
+            result, _, _ = _execute_single_run(
+                cfg=cfg,
+                receptor=receptor,
+                peptide=peptide,
+                pockets=pockets,
+                out_dir=out_dir,
+                run_id=run_id,
+                receptor_path=receptor_path,
+                peptide_path=peptide_path,
+                search_space_mode="full",
+                total_pockets=total_pockets,
+                selected_pockets=len(pockets),
+                pocketing_time=pocketing_time,
+                scan_time=scan_time,
+                scan_params=scan_params,
+                scan_results=scan_results,
+                selected_pocket_ids=[str(p.id) for p in pockets],
+            )
+            return result
 
-        for pocket in pockets:
-            if hasattr(pocket, "meta") and pocket.meta is not None:
-                pocket.meta.setdefault("debug_logger", debug_logger)
-        selected_ids = [str(getattr(pocket, "id", "")) for pocket in pockets]
-        debug_logger.log(
-            {
-                "type": "pocket_selection",
-                "full_search": bool(getattr(cfg, "full_search", True)),
-                "top_pockets": getattr(cfg, "top_pockets", None),
-                "max_pockets_used": getattr(cfg, "max_pockets_used", None),
-                "total": int(total_pockets),
-                "selected": int(selected_pockets),
-                "selected_ids": selected_ids,
+        max_clash_ratio = float(_cfg_value(scan_cfg, "max_clash_ratio", 0.02) or 0.02)
+        feasible_pockets: list[tuple[int, Pocket]] = []
+        rejected: list[dict[str, Any]] = []
+        for idx, pocket in enumerate(pockets):
+            metrics = scan_results.get(str(pocket.id), {})
+            feasible_fraction = float(metrics.get("feasible_fraction", 1.0))
+            clash_ratio_best = float(metrics.get("clash_ratio_best", 0.0))
+            if feasible_fraction <= 0.0:
+                rejected.append({"pocket_id": pocket.id, "reason": "feasible_fraction<=0.0"})
+                continue
+            if clash_ratio_best > max_clash_ratio:
+                rejected.append({"pocket_id": pocket.id, "reason": "clash_ratio_best>max_clash_ratio"})
+                continue
+            feasible_pockets.append((idx, pocket))
+
+        if not feasible_pockets:
+            fallback_dir = os.path.join(out_dir, "fallback_full")
+            full_cfg = cfg.model_copy(deep=True)
+            full_cfg.search_space_mode = "full"
+            full_cfg.full_search = True
+            full_pockets = [_build_global_pocket(receptor, full_cfg)]
+            result, full_payload, full_logger = _execute_single_run(
+                cfg=full_cfg,
+                receptor=receptor,
+                peptide=peptide,
+                pockets=full_pockets,
+                out_dir=fallback_dir,
+                run_id=f"{run_id}-fallback",
+                receptor_path=receptor_path,
+                peptide_path=peptide_path,
+                search_space_mode="full",
+                total_pockets=1,
+                selected_pockets=1,
+                pocketing_time=pocketing_time,
+                scan_time=scan_time,
+                scan_params=scan_params,
+                scan_results=scan_results,
+                selected_pocket_ids=["global"],
+            )
+            requested_budget = int(cfg.generations) * int(cfg.pop_size)
+            assigned_budget = int(full_cfg.generations) * int(full_cfg.pop_size)
+            parent_summary = {
+                "schema_version": "2.0",
+                "mode": "reduced_aggregate",
+                "search_space_mode": "reduced",
+                "budget_policy": str(getattr(cfg, "budget_policy", "split")),
+                "compare_policy": "best_pocket_vs_full",
+                "fallback_to_full": True,
+                "fallback_from": "reduced",
+                "fallback_reason": "no_feasible_pocket",
+                "executed_mode": "full",
+                "rejected_pockets": rejected,
+                "total_runtime_sec": float(full_payload.get("runtime_sec", 0.0)),
+                "total_n_eval": int(sum(float(r.get("value", 0.0)) for r in full_logger.records if r.get("name") == "n_eval")),
+                "total_eval_budget_requested": requested_budget,
+                "total_eval_budget_assigned": assigned_budget,
+                "budget_delta": int(assigned_budget - requested_budget),
+                "budget_rounding_applied": bool(assigned_budget != requested_budget),
+                "n_pockets_total": total_pockets,
+                "n_pockets_used": 0,
+                "selected_pockets": [],
+                "best_pocket_id": "global",
+                "best_over_pockets_cheap": result.best_pose.score_cheap,
+                "best_over_pockets_expensive": result.best_pose.score_expensive,
+                "per_pocket_results": [],
+                "fallback_full_outdir": fallback_dir,
             }
-        )
+            with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as handle:
+                handle.write(json.dumps(parent_summary, indent=2))
+            with open(os.path.join(out_dir, "result.json"), "w", encoding="utf-8") as handle:
+                handle.write(json.dumps(parent_summary, indent=2))
+            return result
 
-        # PT-BR: métricas globais de seleção. "n_pockets_total" é o total detectado,
-        # "n_pockets_used" é quantos realmente foram passados para a busca, e
-        # "reduction_ratio" = 1 - used/total (deve ser > 0 no modo reduced).
-        logger.log_metric("total_pockets", float(total_pockets), step=0)
-        logger.log_metric("selected_pockets", float(selected_pockets), step=0)
-        logger.log_global_metrics(total_pockets, selected_pockets)
-        search = ABCGAVGOSSearch(cfg)
-        prior_pocket = PriorNetPocket()
-        prior_pose = PriorNetPose()
+        budget_policy = str(getattr(cfg, "budget_policy", "split") or "split").lower()
+        if budget_policy not in {"split", "replicated"}:
+            budget_policy = "split"
+        budgets = _allocate_split_budget(cfg.generations, cfg.pop_size, len(feasible_pockets))
 
-        start_search = time.perf_counter()
-        result = search.search(
-            receptor=receptor,
-            peptide=peptide,
-            pockets=pockets,
-            cfg=cfg,
-            score_cheap_fn=score_pose_cheap,
-            score_expensive_fn=score_pose_expensive,
-            prior_pocket=prior_pocket,
-            prior_pose=prior_pose,
-            logger=logger,
-        )
-        end_search = time.perf_counter()
-        end_total = time.perf_counter()
+        per_pocket_results = []
+        total_runtime_sec = 0.0
+        total_n_eval = 0
+        total_eval_budget_requested = int(cfg.generations) * int(cfg.pop_size)
+        total_eval_budget_assigned = 0
+        budget_rounding_applied = False
+        best_result: RunResult | None = None
+        best_cheap = float("-inf")
+        best_expensive = None
+        best_pocket_id = None
 
-        config_resolved_subset = {
-            "seed": cfg.seed,
-            "generations": cfg.generations,
-            "pop_size": cfg.pop_size,
-            "topk": cfg.topk,
-            "search_space_mode": search_space_mode,
-            "search_scope_mode": search_scope_mode,
-            "full_search": bool(getattr(cfg, "full_search", True)),
-            "top_pockets": int(getattr(cfg, "top_pockets", 0) or 0),
-            "max_pockets_used": int(getattr(cfg, "max_pockets_used", 0) or 0),
-            "expensive_every": int(getattr(cfg, "expensive_every", 0) or 0),
-            "expensive_topk": getattr(cfg, "expensive_topk", None),
-            "debug_log_enabled": bool(getattr(cfg, "debug_log_enabled", False)),
-            "debug_log_path": getattr(cfg, "debug_log_path", None),
-            "debug_log_level": getattr(cfg, "debug_log_level", None),
-            "scan": scan_params,
+        for local_idx, (original_idx, pocket) in enumerate(feasible_pockets):
+            pocket_cfg = cfg.model_copy(deep=True)
+            pocket_cfg.search_space_mode = "reduced"
+            pocket_cfg.full_search = False
+            if budget_policy == "split":
+                pocket_cfg.generations, pocket_cfg.pop_size = budgets[local_idx]
+            assigned_budget = int(pocket_cfg.generations) * int(pocket_cfg.pop_size)
+            total_eval_budget_assigned += assigned_budget
+            pocket_out_dir = os.path.join(out_dir, str(pocket.id))
+            result, payload, logger = _execute_single_run(
+                cfg=pocket_cfg,
+                receptor=receptor,
+                peptide=peptide,
+                pockets=[pocket],
+                out_dir=pocket_out_dir,
+                run_id=f"{run_id}-pocket-{pocket.id}",
+                receptor_path=receptor_path,
+                peptide_path=peptide_path,
+                search_space_mode="reduced",
+                total_pockets=total_pockets,
+                selected_pockets=1,
+                pocketing_time=pocketing_time,
+                scan_time=scan_time,
+                scan_params=scan_params,
+                scan_results={str(pocket.id): scan_results.get(str(pocket.id), {})},
+                selected_pocket_ids=[str(pocket.id)],
+            )
+            runtime = float(payload.get("runtime_sec", 0.0))
+            n_eval = int(sum(float(r.get("value", 0.0)) for r in logger.records if r.get("name") == "n_eval"))
+            total_runtime_sec += runtime
+            total_n_eval += n_eval
+            score_cheap = result.best_pose.score_cheap
+            score_expensive = result.best_pose.score_expensive
+            if score_cheap is not None and score_cheap > best_cheap:
+                best_cheap = score_cheap
+                best_expensive = score_expensive
+                best_result = result
+                best_pocket_id = str(pocket.id)
+            metrics = scan_results.get(str(pocket.id), {})
+            per_pocket_results.append(
+                {
+                    "pocket_id": str(pocket.id),
+                    "pocket_index": int(original_idx),
+                    "runtime_sec": runtime,
+                    "n_eval_total": n_eval,
+                    "generations": int(pocket_cfg.generations),
+                    "pop_size": int(pocket_cfg.pop_size),
+                    "best_score_cheap": score_cheap,
+                    "best_score_expensive": score_expensive,
+                    "best_pose_id": result.best_pose.meta.get("pose_id") or result.best_pose.meta.get("id"),
+                    "feasible_fraction": float(metrics.get("feasible_fraction", 0.0)),
+                    "clash_ratio_best": float(metrics.get("clash_ratio_best", 0.0)),
+                    "outdir": pocket_out_dir,
+                    "eval_budget_assigned": assigned_budget,
+                }
+            )
+
+        budget_delta = int(total_eval_budget_assigned - total_eval_budget_requested)
+        budget_rounding_applied = budget_delta != 0
+        parent_summary = {
+            "schema_version": "2.0",
+            "mode": "reduced_aggregate",
+            "search_space_mode": "reduced",
+            "budget_policy": budget_policy,
+            "compare_policy": "best_pocket_vs_full",
+            "fallback_to_full": False,
+            "total_runtime_sec": total_runtime_sec,
+            "total_n_eval": total_n_eval,
+            "total_eval_budget_requested": total_eval_budget_requested,
+            "total_eval_budget_assigned": total_eval_budget_assigned,
+            "budget_delta": budget_delta,
+            "budget_rounding_applied": budget_rounding_applied,
+            "n_pockets_total": total_pockets,
+            "n_pockets_used": len(feasible_pockets),
+            "selected_pockets": [str(p.id) for _, p in feasible_pockets],
+            "best_pocket_id": best_pocket_id,
+            "best_over_pockets_cheap": None if best_result is None else best_result.best_pose.score_cheap,
+            "best_over_pockets_expensive": best_expensive,
+            "per_pocket_results": per_pocket_results,
+            "rejected_pockets": rejected,
         }
-        best_pose_id = result.best_pose.meta.get("pose_id") or result.best_pose.meta.get("id")
+        with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(parent_summary, indent=2))
+        with open(os.path.join(out_dir, "result.json"), "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(parent_summary, indent=2))
+        with open(os.path.join(out_dir, "metrics.jsonl"), "w", encoding="utf-8") as handle:
+            for item in per_pocket_results:
+                handle.write(json.dumps({"name": "pocket.best_score_cheap", "pocket_id": item["pocket_id"], "value": item["best_score_cheap"]}) + "\n")
+                handle.write(json.dumps({"name": "pocket.n_eval_total", "pocket_id": item["pocket_id"], "value": item["n_eval_total"]}) + "\n")
+        with open(os.path.join(out_dir, "metrics.timeseries.jsonl"), "w", encoding="utf-8") as handle:
+            for idx, item in enumerate(per_pocket_results):
+                handle.write(json.dumps({"step": idx, "pocket_id": item["pocket_id"], "best_score_cheap": item["best_score_cheap"], "n_eval_cumulative": sum(x["n_eval_total"] for x in per_pocket_results[: idx + 1])}) + "\n")
 
-        result_path = os.path.join(out_dir, "result.json")
-        with open(result_path, "w", encoding="utf-8") as handle:
-            runtime_sec = end_total - start_total
-            payload = {
-                "mode": "single",
-                "run_id": run_id,
-                "best_score_cheap": result.best_pose.score_cheap,
-                "best_score_expensive": result.best_pose.score_expensive,
-                "best_pose_id": best_pose_id,
-                "n_pockets_detected": total_pockets,
-                "n_pockets_used": selected_pockets,
-                "search_space_mode": search_space_mode,
-                "runtime_sec": runtime_sec,
-                "config_resolved_subset": config_resolved_subset,
-                "timing": {
-                    "total_s": runtime_sec,
-                    "scoring_cheap_s": None,
-                    "scoring_expensive_s": None,
-                    "pocketing_s": pocketing_time,
-                    "scan_s": scan_time,
-                    "search_s": end_search - start_search,
-                },
-            }
-            handle.write(json.dumps(payload, indent=2))
-
-        logger.flush(out_dir)
-        mode_label = "full" if getattr(cfg, "full_search", True) else "reduced"
-        logger.flush_timeseries(out_dir, mode=mode_label)
-        _write_summary(
-            out_dir=out_dir,
-            run_id=run_id,
-            mode="single",
-            receptor_path=receptor_path,
-            peptide_path=peptide_path,
-            search_space_mode=search_space_mode,
-            runtime_sec=end_total - start_total,
-            search_time_sec=end_search - start_search,
-            pocketing_sec=pocketing_time,
-            scan_sec=scan_time,
-            total_pockets=total_pockets,
-            selected_pockets=selected_pockets,
-            best_score_cheap=result.best_pose.score_cheap,
-            best_score_expensive=result.best_pose.score_expensive,
-            best_pose_pocket_id=result.best_pose.meta.get("pocket_id"),
-            config_resolved_subset=config_resolved_subset,
-            records=logger.records,
-            pockets=pockets,
-            scan_params=scan_params,
-            scan_by_pocket=scan_results,
-            selected_pocket_ids=scan_selected_ids or selected_ids,
-        )
-        return result
+        if best_result is None:
+            raise ValueError("Reduced aggregate produced no result.")
+        return best_result
     finally:
         debug_logger.close()
-
 
 def _safe_float(value: Any) -> float | None:
     if value is None:
@@ -524,6 +680,7 @@ def _write_summary(
     }
 
     summary_payload = {
+        "schema_version": "2.0",
         "run_id": run_id,
         "complex_id": complex_id,
         "input_id": input_id,

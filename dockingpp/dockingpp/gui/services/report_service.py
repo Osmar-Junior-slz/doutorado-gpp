@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Literal
 
-JsonKind = Literal["compare", "single", "unknown"]
+JsonKind = Literal["compare", "single", "reduced_aggregate", "unknown"]
 CumulativeMode = Literal["min", "max"]
 
 CUMULATIVE_BEST_BY_KEY: dict[str, CumulativeMode] = {
@@ -180,7 +180,9 @@ def infer_json_kind(obj: dict[str, Any]) -> JsonKind:
     if obj.get("mode") == "compare":
         return "compare"
 
-    if any(key in obj for key in ("best_score_cheap", "best_score")):
+    if obj.get("mode") == "reduced_aggregate":
+        return "reduced_aggregate"
+    if any(key in obj for key in ("best_score_cheap", "best_score", "best_over_pockets_cheap")):
         return "single"
     if any(key in obj for key in ("n_eval", "evaluations")):
         return "single"

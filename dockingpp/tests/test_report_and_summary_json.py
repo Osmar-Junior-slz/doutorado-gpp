@@ -45,7 +45,15 @@ def test_report_json_compare_schema(tmp_path):
     reduced_summary.write_text("{}", encoding="utf-8")
 
     report = {
+        "schema_version": "2.0",
         "mode": "compare",
+        "full_best_score_cheap": 1.0,
+        "reduced_best_over_pockets_cheap": 0.9,
+        "reduced_best_pocket_id": "p1",
+        "full_n_eval_total": 100,
+        "reduced_total_n_eval": 80,
+        "full_runtime_sec": 12.0,
+        "reduced_total_runtime_sec": 10.0,
         "full": {
             "summary_path": str(full_summary),
         },
@@ -60,9 +68,20 @@ def test_report_json_compare_schema(tmp_path):
     payload = json.loads(report_path.read_text(encoding="utf-8"))
 
     assert payload.get("mode") == "compare"
+    assert payload.get("schema_version") == "2.0"
     assert "summary_path" in payload.get("full", {})
     assert "summary_path" in payload.get("reduced", {})
     assert "diff" in payload
+    for key in (
+        "full_best_score_cheap",
+        "reduced_best_over_pockets_cheap",
+        "reduced_best_pocket_id",
+        "full_n_eval_total",
+        "reduced_total_n_eval",
+        "full_runtime_sec",
+        "reduced_total_runtime_sec",
+    ):
+        assert key in payload
 
 
 def test_metrics_jsonl_has_required_fields(tmp_path):
