@@ -44,11 +44,17 @@ class ReportsPage(BasePage):
     title = "Relatórios"
 
     @staticmethod
-    def _download_csv_button(label: str, df: pd.DataFrame, filename: str) -> None:
+    def _download_csv_button(label: str, df: pd.DataFrame, filename: str, key_suffix: str) -> None:
         """Gera um botão de download para CSV a partir de um DataFrame."""
 
         csv_data = df.to_csv(index=False).encode("utf-8")
-        st.download_button(label, csv_data, file_name=filename, mime="text/csv")
+        st.download_button(
+            label,
+            csv_data,
+            file_name=filename,
+            mime="text/csv",
+            key=f"download_csv_{key_suffix}",
+        )
 
     @staticmethod
     def _load_uploaded_json(uploaded_file: st.runtime.uploaded_file_manager.UploadedFile) -> dict[str, Any]:
@@ -306,7 +312,7 @@ class ReportsPage(BasePage):
 
         return metrics_timeseries or metrics_records
 
-    def _render_kpis(self, summary_data: dict[str, Any], series: dict[str, Any] | None) -> None:
+    def _render_kpis(self, summary_data: dict[str, Any], series: dict[str, Any] | None, key_suffix: str) -> None:
         st.subheader("Resumo do Gap")
         resumo = self._resumo_gap(series or {}, summary_data)
         st.table(pd.DataFrame([resumo]))
@@ -315,7 +321,7 @@ class ReportsPage(BasePage):
         summary_rows = self._build_summary_rows(summary_data, resumo)
         st.table(summary_rows)
         summary_df = pd.DataFrame(summary_rows)
-        self._download_csv_button("Baixar tabela resumo (CSV)", summary_df, "resumo_execucao.csv")
+        self._download_csv_button("Baixar tabela resumo (CSV)", summary_df, "resumo_execucao.csv", key_suffix)
 
     def _render_single_report(
         self,
@@ -323,12 +329,13 @@ class ReportsPage(BasePage):
         metrics_records: list[dict[str, Any]] | None,
         summary_data: dict[str, Any],
         metrics_timeseries: list[dict[str, Any]] | None = None,
+        key_suffix: str = "single",
     ) -> None:
         """Renderiza relatório de execução única com gráficos e resumos."""
 
         series_records = self._select_series_records(metrics_records, metrics_timeseries)
         series = extract_series(series_records or [])
-        self._render_kpis(summary_data, series)
+        self._render_kpis(summary_data, series, key_suffix)
 
         if not self._has_time_series(series_records):
             st.info("Sem série temporal; exibindo KPIs.")
@@ -369,6 +376,7 @@ class ReportsPage(BasePage):
         summary_reduced: dict[str, Any],
         metrics_full_timeseries: list[dict[str, Any]] | None = None,
         metrics_reduced_timeseries: list[dict[str, Any]] | None = None,
+        key_suffix: str = "compare",
     ) -> None:
         """Renderiza relatório comparativo entre modos completo e reduzido."""
 
@@ -378,7 +386,12 @@ class ReportsPage(BasePage):
             st.subheader("Comparação avançada")
             st.table(rows)
             compare_df = pd.DataFrame(rows)
-            self._download_csv_button("Baixar tabela resumo (CSV)", compare_df, "comparacao_full_reduced.csv")
+            self._download_csv_button(
+                "Baixar tabela resumo (CSV)",
+                compare_df,
+                "comparacao_full_reduced.csv",
+                f"{key_suffix}_full_reduced",
+            )
 
         st.subheader("Tabela comparativa (KPIs)")
         series_full_records = self._select_series_records(metrics_full, metrics_full_timeseries)
@@ -496,6 +509,7 @@ class ReportsPage(BasePage):
             metrics_records,
             merged,
             metrics_timeseries,
+            key_suffix=f"{run.kind}_{run.run_id or run.run_dir.name}",
         )
 
     def _render_folder_reports(self, selected_folder: Path) -> None:
