@@ -49,7 +49,7 @@ def test_find_report_runs_full_reduced_pair(tmp_path: Path) -> None:
                 "generations": 10,
                 "pop_size": 20,
                 "full_search": True,
-                "search_space_mode": "global",
+                "search_space_mode": "full",
             }
         ),
         encoding="utf-8",
@@ -60,7 +60,7 @@ def test_find_report_runs_full_reduced_pair(tmp_path: Path) -> None:
                 "timing": {"total_s": 12.0},
                 "best_score_cheap": 0.9,
                 "mode": "single",
-                "search_space_mode": "global",
+                "search_space_mode": "full",
             }
         ),
         encoding="utf-8",
@@ -84,7 +84,7 @@ def test_find_report_runs_full_reduced_pair(tmp_path: Path) -> None:
                 "generations": 5,
                 "pop_size": 10,
                 "full_search": False,
-                "search_space_mode": "pockets",
+                "search_space_mode": "reduced",
             }
         ),
         encoding="utf-8",
@@ -95,7 +95,7 @@ def test_find_report_runs_full_reduced_pair(tmp_path: Path) -> None:
                 "timing": {"total_s": 4.0},
                 "best_score_cheap": 0.7,
                 "mode": "single",
-                "search_space_mode": "pockets",
+                "search_space_mode": "reduced",
             }
         ),
         encoding="utf-8",

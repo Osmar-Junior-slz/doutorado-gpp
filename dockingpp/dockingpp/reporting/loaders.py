@@ -146,6 +146,8 @@ def _classify_json_payload(payload: dict[str, Any]) -> str:
 
 
 def _is_summary_payload(payload: dict[str, Any]) -> bool:
+    if payload.get("mode") == "reduced_aggregate":
+        return bool(payload.get("per_pocket_results") is not None and payload.get("total_n_eval") is not None)
     return bool(
         payload.get("run_id") is not None
         and payload.get("best_cheap_by_pocket") is not None
@@ -191,9 +193,9 @@ def _infer_run_kind(payloads: Iterable[dict[str, Any]]) -> RunKind:
         elif full_search is False:
             reduced_signal = True
         search_space_mode = _extract_flag(payload, "search_space_mode")
-        if search_space_mode == "global":
+        if search_space_mode == "full":
             full_signal = True
-        elif search_space_mode == "pockets":
+        elif search_space_mode == "reduced":
             reduced_signal = True
     if full_signal:
         return "full"

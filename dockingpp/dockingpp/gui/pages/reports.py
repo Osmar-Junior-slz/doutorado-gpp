@@ -32,6 +32,7 @@ from dockingpp.reporting.plots import (
     plot_convergence,
     plot_cost_comparison,
     plot_paired_comparison,
+    plot_pocket_rank_effect,
     plot_search_space_reduction,
 )
 
@@ -364,6 +365,48 @@ class ReportsPage(BasePage):
         if plot_convergence(series, convergence_png):
             self._render_png(convergence_png, "Convergência: best_score_cheap vs n_eval_cumulative")
 
+
+    def _render_reduced_aggregate_report(
+        self,
+        bundle: ReportBundle,
+        metrics_records: list[dict[str, Any]] | None,
+        summary_data: dict[str, Any],
+    ) -> None:
+        """Renderiza relatório agregado do reduced por bolsão."""
+
+        st.subheader("Reduced agregado por bolsão")
+        st.json(
+            {
+                "best_pocket_id": summary_data.get("best_pocket_id"),
+                "best_over_pockets_cheap": summary_data.get("best_over_pockets_cheap"),
+                "best_over_pockets_expensive": summary_data.get("best_over_pockets_expensive"),
+                "total_n_eval": summary_data.get("total_n_eval"),
+                "total_runtime_sec": summary_data.get("total_runtime_sec"),
+                "budget_policy": summary_data.get("budget_policy"),
+                "budget_delta": summary_data.get("budget_delta"),
+                "fallback_to_full": summary_data.get("fallback_to_full"),
+            }
+        )
+        per_pocket = summary_data.get("per_pocket_results", [])
+        if isinstance(per_pocket, list) and per_pocket:
+            frame = pd.DataFrame(per_pocket)
+            st.subheader("Resultados por bolsão")
+            st.dataframe(frame)
+        else:
+            st.info("Sem resultados por bolsão no summary agregado.")
+
+        rejected = summary_data.get("rejected_pockets", [])
+        if isinstance(rejected, list) and rejected:
+            st.subheader("Bolsões rejeitados")
+            st.dataframe(pd.DataFrame(rejected))
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="reports_reduced_agg_"))
+        pocket_png = temp_dir / "pocket_rank_effect.png"
+        if plot_pocket_rank_effect(summary_data, pocket_png) is None and pocket_png.exists():
+            self._render_png(pocket_png, "Custo/score por bolsão")
+        elif pocket_png.exists():
+            self._render_png(pocket_png, "Custo/score por bolsão")
+
     def _render_compare_report(
         self,
         bundle: ReportBundle,
@@ -613,7 +656,7 @@ class ReportsPage(BasePage):
             main_json = self._load_uploaded_json(main_json_upload)
             kind = infer_json_kind(main_json)
 
-            if kind == "single":
+            if kind in {"single", "reduced_aggregate"}:
                 metrics_upload = st.file_uploader("Arquivo de métricas (.jsonl)", type=["jsonl"])
                 if metrics_upload:
                     metrics_records = self._load_uploaded_jsonl(metrics_upload)
@@ -641,7 +684,7 @@ class ReportsPage(BasePage):
         summary_full = main_json
         summary_reduced = main_json
 
-        if kind == "single":
+        if kind in {"single", "reduced_aggregate"}:
             summary_path = self._resolve_report_path(
                 self._resolve_report_path(base_dir, main_json.get("outdir")),
                 main_json.get("summary_path"),
@@ -691,6 +734,8 @@ class ReportsPage(BasePage):
 
         if bundle.kind == "single":
             self._render_single_report(bundle, metrics_records, summary_data)
+        elif bundle.kind == "reduced_aggregate":
+            self._render_reduced_aggregate_report(bundle, metrics_records, summary_data)
         elif bundle.kind == "compare":
             self._render_compare_report(
                 bundle,
@@ -709,7 +754,7 @@ class ReportsPage(BasePage):
         elif main_json_upload:
             self._download_json_payload("Baixar JSON principal", main_json, main_json_upload.name)
 
-        if bundle.kind == "single":
+        if bundle.kind in {"single", "reduced_aggregate"}:
             if metrics_path:
                 st.download_button(
                     "Baixar métricas (.jsonl)",

@@ -585,11 +585,14 @@ class DockingPage(BasePage):
             full_summary = results["full"].get("summary", {})
             reduced_summary = results["reduced"].get("summary", {})
             full_best_cheap = full_summary.get("best_score_cheap", results["full"]["best_score_cheap"])
-            reduced_best_cheap = reduced_summary.get("best_score_cheap", results["reduced"]["best_score_cheap"])
+            reduced_best_cheap = reduced_summary.get("best_over_pockets_cheap", reduced_summary.get("best_score_cheap", results["reduced"]["best_score_cheap"]))
             full_best_expensive = full_summary.get("best_score_expensive")
-            reduced_best_expensive = reduced_summary.get("best_score_expensive")
-            full_total_s = results["full"]["timing"]["total_s"]
-            reduced_total_s = results["reduced"]["timing"]["total_s"]
+            reduced_best_expensive = reduced_summary.get("best_over_pockets_expensive", reduced_summary.get("best_score_expensive"))
+            full_total_s = float(results["full"]["timing"]["total_s"])
+            reduced_total_s = float(reduced_summary.get("total_runtime_sec", results["reduced"]["timing"]["total_s"]))
+            full_n_eval_total = int(full_summary.get("n_eval_total", 0) or 0)
+            reduced_total_n_eval = int(reduced_summary.get("total_n_eval", reduced_summary.get("n_eval_total", 0)) or 0)
+            reduced_best_pocket_id = reduced_summary.get("best_pocket_id")
             full_expensive_ran = full_summary.get("expensive_ran_count")
             reduced_expensive_ran = reduced_summary.get("expensive_ran_count")
 
@@ -617,7 +620,15 @@ class DockingPage(BasePage):
             }
 
             report = {
+                "schema_version": "2.0",
                 "mode": "compare",
+                "full_best_score_cheap": full_best_cheap,
+                "reduced_best_over_pockets_cheap": reduced_best_cheap,
+                "reduced_best_pocket_id": reduced_best_pocket_id,
+                "full_n_eval_total": full_n_eval_total,
+                "reduced_total_n_eval": reduced_total_n_eval,
+                "full_runtime_sec": full_total_s,
+                "reduced_total_runtime_sec": reduced_total_s,
                 "full": {
                     "outdir": results["full"]["out_dir"],
                     "summary_path": results["full"]["summary_path"],
@@ -631,6 +642,8 @@ class DockingPage(BasePage):
                     "metrics_path": str(Path(results["reduced"]["out_dir"]) / "metrics.jsonl"),
                     "timing": results["reduced"]["timing"],
                     "search_space_mode": resolved_configs["reduced"].get("search_space_mode"),
+                    "mode": reduced_summary.get("mode"),
+                    "best_pocket_id": reduced_best_pocket_id,
                 },
                 "diff": diff_payload,
                 "config_compare": {

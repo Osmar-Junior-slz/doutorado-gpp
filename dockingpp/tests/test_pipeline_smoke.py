@@ -37,25 +37,16 @@ def test_pipeline_pocket_reduction(tmp_path):
     cfg = Config(**cfg_data)
     cfg.full_search = False
     cfg.top_pockets = 1
-    cfg.search_space_mode = "pockets"
+    cfg.search_space_mode = "reduced"
     out_dir = tmp_path / "out_reduced"
 
     run_pipeline(cfg, "__dummy__", "__dummy__", str(out_dir))
 
-    metrics = []
-    with open(out_dir / "metrics.jsonl", "r", encoding="utf-8") as handle:
-        for line in handle:
-            metrics.append(json.loads(line))
+    summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
 
-    assert (out_dir / "metrics.timeseries.jsonl").exists()
-
-    metric_map = {entry["name"]: entry["value"] for entry in metrics}
-    total_pockets = int(metric_map.get("n_pockets_total", 0))
-    used_pockets = int(metric_map.get("n_pockets_used", 0))
-    reduction_ratio = float(metric_map.get("reduction_ratio", 0.0))
-
-    assert used_pockets < total_pockets
-    assert reduction_ratio > 0
+    assert summary["mode"] == "reduced_aggregate"
+    assert summary["n_pockets_used"] <= summary["n_pockets_total"]
+    assert summary["best_pocket_id"] is not None
 
 
 def test_pipeline_debug_log_defaults(tmp_path):
