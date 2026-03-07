@@ -9,9 +9,10 @@ import pytest
 pytest.importorskip("matplotlib")
 
 from dockingpp.reporting.plots import (
-    plot_cost_quality,
-    plot_omega_reduction,
-    plot_score_stability,
+    plot_convergence,
+    plot_cost_comparison,
+    plot_paired_comparison,
+    plot_search_space_reduction,
 )
 
 
@@ -29,14 +30,27 @@ def test_plots_geram_pngs(tmp_path: Path) -> None:
         "expensive_ran": [0, 1, 1],
     }
 
-    omega_png = tmp_path / "omega.png"
+    convergence_png = tmp_path / "convergence.png"
     cost_png = tmp_path / "cost.png"
-    stability_png = tmp_path / "stability.png"
+    reduction_png = tmp_path / "reduction.png"
+    paired_png = tmp_path / "paired.png"
 
-    plot_omega_reduction(series, omega_png)
-    plot_cost_quality(series, cost_png)
-    plot_score_stability(series, stability_png)
+    assert plot_convergence(series, convergence_png)
+    assert plot_cost_comparison(
+        {"runtime_total_s": 10.0, "n_eval_total": 300.0},
+        {"runtime_total_s": 5.0, "n_eval_total": 120.0},
+        cost_png,
+    )
+    assert plot_search_space_reduction(
+        {"n_pockets_total": 20, "n_pockets_used": 5},
+        reduction_png,
+    )
+    assert plot_paired_comparison(
+        [{"speedup_runtime": 2.0, "speedup_eval": 2.5, "delta_score_cheap": -0.1}],
+        paired_png,
+    )
 
-    assert omega_png.exists()
+    assert convergence_png.exists()
     assert cost_png.exists()
-    assert stability_png.exists()
+    assert reduction_png.exists()
+    assert paired_png.exists()
