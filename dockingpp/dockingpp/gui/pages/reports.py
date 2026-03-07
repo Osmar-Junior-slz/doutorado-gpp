@@ -518,12 +518,19 @@ class ReportsPage(BasePage):
             return options[labels.index(selected)]
 
         if view_mode == "Separado":
-            selected_full = _select_run("Full", full_runs) if full_runs else None
-            selected_reduced = _select_run("Reduced", reduced_runs) if reduced_runs else None
-            if selected_full:
-                self._render_run_block("Full", selected_full)
-            if selected_reduced:
-                self._render_run_block("Reduced", selected_reduced)
+            if full_runs or reduced_runs:
+                selected_full = _select_run("Full", full_runs) if full_runs else None
+                selected_reduced = _select_run("Reduced", reduced_runs) if reduced_runs else None
+                if selected_full:
+                    self._render_run_block("Full", selected_full)
+                if selected_reduced:
+                    self._render_run_block("Reduced", selected_reduced)
+                return
+
+            unknown_runs = [run for run in runs if run.kind == "unknown"]
+            selected_unknown = _select_run("Run", unknown_runs)
+            if selected_unknown:
+                self._render_run_block("Run", selected_unknown)
             return
 
         if view_mode == "Comparar":
