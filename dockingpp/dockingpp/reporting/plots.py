@@ -13,6 +13,108 @@ if TYPE_CHECKING:
     import matplotlib.pyplot as plt
 
 
+def plot_comparacao_custo(completo: dict[str, Any], reduzido: dict[str, Any], out_png: str | Path) -> bool:
+    """Compara custo computacional final entre Completo e Reduzido."""
+
+    tempo_completo = _buscar_numero(completo, ["runtime_total_s", "total_s", "elapsed_s", "runtime_s"])
+    tempo_reduzido = _buscar_numero(reduzido, ["runtime_total_s", "total_s", "elapsed_s", "runtime_s"])
+    avaliacoes_completo = _buscar_numero(completo, ["n_eval_total"])
+    avaliacoes_reduzido = _buscar_numero(reduzido, ["n_eval_total"])
+    if tempo_completo is None and tempo_reduzido is None and avaliacoes_completo is None and avaliacoes_reduzido is None:
+        return False
+
+    plt = _carregar_pyplot()
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    _plot_bar_pair(axes[0], "tempo_execucao_seg", tempo_completo, tempo_reduzido, "tempo_execucao_seg")
+    _plot_bar_pair(axes[1], "n_eval_total", avaliacoes_completo, avaliacoes_reduzido, "n_eval_total")
+    fig.suptitle("Comparação de custo: Completo vs Reduzido")
+    _salvar_figura(fig, out_png)
+    return True
+
+
+def plot_reducao_espaco_busca(summary: dict[str, Any], out_png: str | Path) -> bool:
+    """Mostra n_pockets_total, n_pockets_used e taxa_reducao."""
+
+    total = _buscar_numero(summary, ["n_pockets_total", "pockets_detected", "pockets_total", "n_pockets_detected"])
+    used = _buscar_numero(summary, ["n_pockets_used", "pockets_used", "n_selected"])
+    ratio = _buscar_numero(summary, ["reduction_ratio", "kept_ratio_final"])
+    if ratio is None and total is not None and used is not None:
+        ratio = used / max(total, 1.0)
+    if total is None and used is None and ratio is None:
+        return False
+
+    plt = _carregar_pyplot()
+    fig, ax = plt.subplots(figsize=(6, 4))
+    bars = ax.bar(["n_pockets_total", "n_pockets_used"], [0.0 if total is None else total, 0.0 if used is None else used])
+    for bar, raw in zip(bars, [total, used]):
+        if raw is not None:
+            ax.text(bar.get_x() + bar.get_width() / 2.0, bar.get_height(), f"{raw:.0f}", ha="center", va="bottom")
+    ax.text(0.98, 0.95, f"taxa_reducao: {'N/D' if ratio is None else f'{ratio:.2%}'}", transform=ax.transAxes, ha="right", va="top")
+    ax.set_ylabel("Quantidade")
+    ax.set_title("Redução do espaço de busca")
+    _salvar_figura(fig, out_png)
+    return True
+
+
+def plot_convergencia(series: dict[str, Any], out_png: str | Path) -> bool:
+    """Convergência de best_score_cheap em função de n_eval_acumulado."""
+
+    linhas = _normalizar_para_comparacao(series)
+    plt = _carregar_pyplot()
+    fig, ax = plt.subplots()
+    has_data = False
+    for label, dados in linhas:
+        xs = _n_eval_acumulado(dados)
+        ys = _as_float_list(dados.get("best_cheap", []))
+        pontos = [(x, y) for x, y in zip(xs, ys) if x is not None and y is not None]
+        if not pontos:
+            continue
+        has_data = True
+        x_vals, y_vals = zip(*pontos)
+        ax.plot(x_vals, y_vals, label=label)
+
+    if not has_data:
+        _carregar_pyplot().close(fig)
+        return False
+
+    ax.set_title("Convergência: best_score_cheap vs n_eval_acumulado")
+    ax.set_xlabel("n_eval_acumulado")
+    ax.set_ylabel("best_score_cheap")
+    ax.legend()
+    _salvar_figura(fig, out_png)
+    return True
+
+
+def plot_comparacao_pareada(paired_rows: list[dict[str, Any]], out_png: str | Path) -> bool:
+    """Plota speedup_runtime, speedup_eval e delta_score_cheap (dados pareados)."""
+
+    if not paired_rows:
+        return False
+    row = paired_rows[0]
+    speedup_runtime = _buscar_numero(row, ["speedup_runtime"])
+    speedup_eval = _buscar_numero(row, ["speedup_eval"])
+    delta_score_cheap = _buscar_numero(row, ["delta_score_cheap"])
+    if speedup_runtime is None and speedup_eval is None and delta_score_cheap is None:
+        return False
+
+    plt = _carregar_pyplot()
+    fig, ax = plt.subplots(figsize=(7, 4))
+    labels = ["ganho_tempo", "ganho_avaliacoes", "delta_score_cheap"]
+    valores = [
+        0.0 if speedup_runtime is None else speedup_runtime,
+        0.0 if speedup_eval is None else speedup_eval,
+        0.0 if delta_score_cheap is None else delta_score_cheap,
+    ]
+    bars = ax.bar(labels, valores)
+    for bar, raw in zip(bars, [speedup_runtime, speedup_eval, delta_score_cheap]):
+        if raw is not None:
+            ax.text(bar.get_x() + bar.get_width() / 2.0, bar.get_height(), f"{raw:.3g}", ha="center", va="bottom")
+    ax.set_title("Comparação pareada")
+    ax.set_ylabel("Valor")
+    _salvar_figura(fig, out_png)
+    return True
+
+
 def plot_omega_reduction(series: dict[str, Any], out_png: str | Path) -> None:
     """Plota redução do espaço de busca Ω -> Ω'."""
 
@@ -132,6 +234,33 @@ def _normalizar_para_comparacao(series: dict[str, Any]) -> list[tuple[str, dict[
     if "full" in series and "reduced" in series:
         return [("Completo", series["full"]), ("Reduzido", series["reduced"])]
     return [("Execução", series)]
+
+
+def _n_eval_acumulado(series: dict[str, Any]) -> list[float | None]:
+    n_eval_vals = _as_float_list(series.get("n_eval_total", []))
+    nums = [v for v in n_eval_vals if isinstance(v, (int, float))]
+    if nums and all(nums[idx] <= nums[idx + 1] for idx in range(len(nums) - 1)):
+        return n_eval_vals
+    return _cumsum(n_eval_vals)
+
+
+def _buscar_numero(payload: dict[str, Any], chaves: list[str]) -> float | None:
+    for chave in chaves:
+        valor = payload.get(chave)
+        if isinstance(valor, (int, float)):
+            return float(valor)
+    return None
+
+
+def _plot_bar_pair(ax: "plt.Axes", ylabel: str, completo: float | None, reduzido: float | None, title: str) -> None:
+    labels = ["Completo", "Reduzido"]
+    vals = [0.0 if completo is None else completo, 0.0 if reduzido is None else reduzido]
+    bars = ax.bar(labels, vals, color=["tab:blue", "tab:orange"])
+    for bar, raw in zip(bars, [completo, reduzido]):
+        if raw is not None:
+            ax.text(bar.get_x() + bar.get_width() / 2.0, bar.get_height(), f"{raw:.3g}", ha="center", va="bottom")
+    ax.set_title(title)
+    ax.set_ylabel(ylabel)
 
 
 def _series_x(series: dict[str, Any]) -> list[Any]:

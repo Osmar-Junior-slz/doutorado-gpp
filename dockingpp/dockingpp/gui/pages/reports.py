@@ -29,11 +29,10 @@ from dockingpp.reporting.loaders import (
     pair_full_reduced,
 )
 from dockingpp.reporting.plots import (
-    plot_cost_quality,
-    plot_filter_distribution,
-    plot_omega_reduction,
-    plot_pocket_rank_effect,
-    plot_score_stability,
+    plot_convergencia,
+    plot_comparacao_custo,
+    plot_comparacao_pareada,
+    plot_reducao_espaco_busca,
 )
 
 
@@ -312,6 +311,18 @@ class ReportsPage(BasePage):
 
         return metrics_timeseries or metrics_records
 
+    @staticmethod
+    def _carregar_csv_comparacao_pareada(csv_path: Path | None) -> list[dict[str, Any]]:
+        """Carrega paired_comparison.csv quando disponível."""
+
+        if csv_path is None or not csv_path.exists():
+            return []
+        try:
+            frame = pd.read_csv(csv_path)
+        except (OSError, pd.errors.EmptyDataError):
+            return []
+        return frame.to_dict(orient="records")
+
     def _render_kpis(self, summary_data: dict[str, Any], series: dict[str, Any] | None, key_suffix: str) -> None:
         st.subheader("Resumo do Gap")
         resumo = self._resumo_gap(series or {}, summary_data)
@@ -345,27 +356,13 @@ class ReportsPage(BasePage):
         st.subheader("Gráficos")
         temp_dir = Path(tempfile.mkdtemp(prefix="reports_"))
 
-        omega_png = temp_dir / "omega_reduction.png"
-        plot_omega_reduction(series, omega_png)
-        self._render_png(omega_png, "Redução de Ω para Ω'")
+        reduction_png = temp_dir / "search_space_reduction.png"
+        if plot_reducao_espaco_busca({**summary_data, **self._resumo_gap(series, summary_data)}, reduction_png):
+            self._render_png(reduction_png, "Redução do espaço de busca")
 
-        cost_png = temp_dir / "cost_quality.png"
-        plot_cost_quality(series, cost_png)
-        self._render_png(cost_png, "Custo x Qualidade")
-
-        stability_png = temp_dir / "score_stability.png"
-        plot_score_stability(series, stability_png)
-        self._render_png(stability_png, "Estabilidade do score")
-
-        pocket_png = temp_dir / "pocket_effect.png"
-        plot_pocket_rank_effect(metrics_records or series_records or [], pocket_png)
-        self._render_png(pocket_png, "Efeito do pocket ranking")
-
-        filter_png = temp_dir / "filter_distribution.png"
-        if plot_filter_distribution(metrics_records or series_records or [], filter_png):
-            self._render_png(filter_png, "Distribuição pré vs pós filtro")
-        else:
-            st.warning("Dados de distribuição não disponíveis.")
+        convergence_png = temp_dir / "convergence.png"
+        if plot_convergencia(series, convergence_png):
+            self._render_png(convergence_png, "Convergência: best_score_cheap vs n_eval_acumulado")
 
     def _render_compare_report(
         self,
@@ -393,96 +390,61 @@ class ReportsPage(BasePage):
                 f"{key_suffix}_full_reduced",
             )
 
-        st.subheader("Tabela comparativa (KPIs)")
         series_full_records = self._select_series_records(metrics_full, metrics_full_timeseries)
         series_reduced_records = self._select_series_records(metrics_reduced, metrics_reduced_timeseries)
         series_full = extract_series(series_full_records or [])
         series_reduced = extract_series(series_reduced_records or [])
-        summary_table = pd.DataFrame(
-            [
-                {
-                    "Modo": "Completo",
-                    **{
-                        row["Campo"]: row["Valor"]
-                        for row in self._build_summary_rows(summary_full, self._resumo_gap(series_full, summary_full))
-                    },
-                },
-                {
-                    "Modo": "Reduzido",
-                    **{
-                        row["Campo"]: row["Valor"]
-                        for row in self._build_summary_rows(summary_reduced, self._resumo_gap(series_reduced, summary_reduced))
-                    },
-                },
-            ]
-        )
-        st.table(summary_table)
-
-        st.subheader("Resumo do Gap")
         resumo_full = self._resumo_gap(series_full, summary_full)
         resumo_reduced = self._resumo_gap(series_reduced, summary_reduced)
-        speedup = None
-        delta_quality = None
-        if resumo_full.get("runtime_total_s") and resumo_reduced.get("runtime_total_s"):
-            try:
-                speedup = float(resumo_full["runtime_total_s"]) / float(resumo_reduced["runtime_total_s"])
-            except (TypeError, ValueError, ZeroDivisionError):
-                speedup = None
-        if resumo_full.get("best_cheap") is not None and resumo_reduced.get("best_cheap") is not None:
-            try:
-                delta_quality = float(resumo_reduced["best_cheap"]) - float(resumo_full["best_cheap"])
-            except (TypeError, ValueError):
-                delta_quality = None
-        resumo_compare = {
-            "speedup": speedup,
-            "delta_quality": delta_quality,
-        }
+
+        st.subheader("Tabela comparativa (KPIs)")
         st.table(pd.DataFrame([{"Modo": "Completo", **resumo_full}, {"Modo": "Reduzido", **resumo_reduced}]))
-        st.table(pd.DataFrame([resumo_compare]))
 
         self._render_warning_missing(series_full)
         self._render_warning_missing(series_reduced)
 
-        if not self._has_time_series(series_full_records) or not self._has_time_series(series_reduced_records):
-            st.info("Sem série temporal para comparação; exibindo apenas KPIs.")
-            return
-
-        st.subheader("Gráficos (Full vs Reduced)")
+        st.subheader("Gráficos (Completo vs Reduzido)")
         temp_dir = Path(tempfile.mkdtemp(prefix="reports_compare_"))
 
-        omega_full = temp_dir / "omega_full.png"
-        omega_reduced = temp_dir / "omega_reduced.png"
-        plot_omega_reduction(series_full, omega_full)
-        plot_omega_reduction(series_reduced, omega_reduced)
-        col1, col2 = st.columns(2)
-        with col1:
-            self._render_png(omega_full, "Redução Ω (Completo)")
-        with col2:
-            self._render_png(omega_reduced, "Redução Ω (Reduzido)")
+        cost_png = temp_dir / "cost_comparison.png"
+        if plot_comparacao_custo(resumo_full, resumo_reduced, cost_png):
+            self._render_png(cost_png, "Comparação de custo: tempo_execucao_seg e n_eval_total")
+        else:
+            st.info("Sem dados suficientes para gráfico de custo.")
 
-        cost_png = temp_dir / "cost_quality_compare.png"
-        plot_cost_quality({"full": series_full, "reduced": series_reduced}, cost_png)
-        self._render_png(cost_png, "Custo x Qualidade (Comparativo)")
+        reduction_full_png = temp_dir / "reduction_full.png"
+        reduction_reduced_png = temp_dir / "reduction_reduced.png"
+        has_full_reduction = plot_reducao_espaco_busca({**summary_full, **resumo_full}, reduction_full_png)
+        has_reduced_reduction = plot_reducao_espaco_busca({**summary_reduced, **resumo_reduced}, reduction_reduced_png)
+        if has_full_reduction or has_reduced_reduction:
+            col1, col2 = st.columns(2)
+            with col1:
+                if has_full_reduction:
+                    self._render_png(reduction_full_png, "Redução do espaço de busca (Completo)")
+            with col2:
+                if has_reduced_reduction:
+                    self._render_png(reduction_reduced_png, "Redução do espaço de busca (Reduzido)")
+        else:
+            st.info("Sem dados suficientes para redução do espaço de busca.")
 
-        stability_full = temp_dir / "stability_full.png"
-        stability_reduced = temp_dir / "stability_reduced.png"
-        plot_score_stability(series_full, stability_full)
-        plot_score_stability(series_reduced, stability_reduced)
-        col3, col4 = st.columns(2)
-        with col3:
-            self._render_png(stability_full, "Estabilidade (Completo)")
-        with col4:
-            self._render_png(stability_reduced, "Estabilidade (Reduzido)")
+        convergence_png = temp_dir / "convergence_compare.png"
+        if plot_convergencia({"full": series_full, "reduced": series_reduced}, convergence_png):
+            self._render_png(convergence_png, "Convergência: best_score_cheap vs n_eval_acumulado")
+        else:
+            st.info("Sem dados suficientes para convergência.")
 
-        pocket_full = temp_dir / "pocket_full.png"
-        pocket_reduced = temp_dir / "pocket_reduced.png"
-        plot_pocket_rank_effect(metrics_full or series_full_records or [], pocket_full)
-        plot_pocket_rank_effect(metrics_reduced or series_reduced_records or [], pocket_reduced)
-        col5, col6 = st.columns(2)
-        with col5:
-            self._render_png(pocket_full, "Pocket ranking (Completo)")
-        with col6:
-            self._render_png(pocket_reduced, "Pocket ranking (Reduzido)")
+        paired_rows: list[dict[str, Any]] = []
+        paired_obj = bundle.aux_jsons.get("paired_comparison")
+        if isinstance(paired_obj, dict):
+            if all(k in paired_obj for k in ("speedup_runtime", "speedup_eval", "delta_score_cheap")):
+                paired_rows = [paired_obj]
+            elif isinstance(paired_obj.get("rows"), list):
+                paired_rows = [row for row in paired_obj.get("rows", []) if isinstance(row, dict)]
+        paired_png = temp_dir / "paired_comparison.png"
+        if plot_comparacao_pareada(paired_rows, paired_png):
+            self._render_png(paired_png, "Comparação pareada: speedup_runtime, speedup_eval, delta_score_cheap")
+        elif paired_rows:
+            st.info("Dados pareados insuficientes para plot.")
 
     @staticmethod
     def _load_run_payload(path: Path | None) -> dict[str, Any]:
@@ -533,12 +495,12 @@ class ReportsPage(BasePage):
 
         if view_mode == "Separado":
             if full_runs or reduced_runs:
-                selected_full = _select_run("Full", full_runs) if full_runs else None
-                selected_reduced = _select_run("Reduced", reduced_runs) if reduced_runs else None
+                selected_full = _select_run("Completo", full_runs) if full_runs else None
+                selected_reduced = _select_run("Reduzido", reduced_runs) if reduced_runs else None
                 if selected_full:
-                    self._render_run_block("Full", selected_full)
+                    self._render_run_block("Completo", selected_full)
                 if selected_reduced:
-                    self._render_run_block("Reduced", selected_reduced)
+                    self._render_run_block("Reduzido", selected_reduced)
                 return
 
             unknown_runs = [run for run in runs if run.kind == "unknown"]
@@ -550,11 +512,11 @@ class ReportsPage(BasePage):
         if view_mode == "Comparar":
             selected_full, selected_reduced = pair_full_reduced(runs)
             if full_runs:
-                selected_full = _select_run("Full", full_runs) or selected_full
+                selected_full = _select_run("Completo", full_runs) or selected_full
             if reduced_runs:
-                selected_reduced = _select_run("Reduced", reduced_runs) or selected_reduced
+                selected_reduced = _select_run("Reduzido", reduced_runs) or selected_reduced
             if not selected_full or not selected_reduced:
-                st.warning("É necessário selecionar runs Full e Reduced para comparar.")
+                st.warning("É necessário selecionar execuções Completo e Reduzido para comparar.")
                 return
 
             summary_full = self._merge_summary_result(
@@ -573,8 +535,19 @@ class ReportsPage(BasePage):
             metrics_reduced_timeseries = (
                 load_jsonl(selected_reduced.metrics_timeseries_path) if selected_reduced.metrics_timeseries_path else None
             )
+            paired_rows: list[dict[str, Any]] = []
+            for candidate in [
+                selected_full.run_dir / "paired_comparison.csv",
+                selected_reduced.run_dir / "paired_comparison.csv",
+                selected_full.run_dir.parent / "paired_comparison.csv",
+                selected_folder / "paired_comparison.csv",
+            ]:
+                paired_rows = self._carregar_csv_comparacao_pareada(candidate)
+                if paired_rows:
+                    break
+
             self._render_compare_report(
-                ReportBundle(kind="compare", main_json={}, metrics=None, aux_jsons={}),
+                ReportBundle(kind="compare", main_json={}, metrics=None, aux_jsons={"paired_comparison": {"rows": paired_rows}}),
                 metrics_full,
                 metrics_reduced,
                 summary_full,
