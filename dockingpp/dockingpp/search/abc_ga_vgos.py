@@ -83,6 +83,7 @@ class ABCGAVGOSSearch(SearchEngine):
         max_trans = float(getattr(cfg, "max_trans", 0.0) or 0.0)
         max_rot_deg = float(getattr(cfg, "max_rot_deg", 0.0) or 0.0)
         debug_logger = getattr(cfg, "debug_logger", None)
+        tracer = getattr(cfg, "audit_tracer", None)
 
         def random_pose() -> Pose:
             rot = self._axis_angle_rotation(rng, max_rot_deg)
@@ -107,6 +108,8 @@ class ABCGAVGOSSearch(SearchEngine):
                     "topk": int(topk),
                 }
             )
+        if tracer is not None:
+            tracer.event(stage="search", event_type="search_started", substage="pocket", pocket_id=str(getattr(pocket, "id", "")), payload={"pocket_index": int(pocket_index), "generations": int(generations), "pop_size": int(pop_size)}, level="TRACE")
 
         for generation in range(generations):
             if generation > 0:
@@ -176,6 +179,8 @@ class ABCGAVGOSSearch(SearchEngine):
                         "n_score_zero": int(n_score_zero),
                     }
                 )
+            if tracer is not None:
+                tracer.event(stage="search", event_type="generation_completed", substage="generation", pocket_id=str(getattr(pocket, "id", "")), payload={"generation": int(generation), "n_eval_total": int(len(poses)), "best_score": float(gen_best_score)}, level="AUDIT")
 
         best_pose.meta["generation"] = best_generation
         if debug_logger is not None:
@@ -187,6 +192,8 @@ class ABCGAVGOSSearch(SearchEngine):
                     "best_pose_id": best_pose.meta.get("pose_id") or best_pose.meta.get("id"),
                 }
             )
+        if tracer is not None:
+            tracer.event(stage="search", event_type="run_finished", substage="pocket", pocket_id=str(getattr(pocket, "id", "")), payload={"best_score": float(best_score), "best_pose_id": best_pose.meta.get("pose_id") or best_pose.meta.get("id")}, level="TRACE")
         return best_pose, population
 
     def search(
