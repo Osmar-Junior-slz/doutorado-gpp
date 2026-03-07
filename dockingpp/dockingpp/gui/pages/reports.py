@@ -313,6 +313,34 @@ class ReportsPage(BasePage):
         return metrics_timeseries or metrics_records
 
     @staticmethod
+    def _is_reduced_aggregate_fallback(summary: dict[str, Any]) -> bool:
+        return (
+            summary.get("mode") == "reduced_aggregate"
+            and bool(summary.get("fallback_to_full"))
+            and not bool(summary.get("per_pocket_results") or [])
+        )
+
+    @staticmethod
+    def _resolve_compare_fallback_metrics(
+        summary: dict[str, Any],
+        compare_block: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        resolved: dict[str, Any] = dict(summary)
+        if not compare_block:
+            return resolved
+        for dst, keys in {
+            "n_eval_total": ["reduced_total_n_eval", "total_n_eval", "n_eval_total"],
+            "runtime_total_s": ["reduced_total_runtime_sec", "total_runtime_sec", "runtime_total_s"],
+            "best_cheap": ["reduced_best_over_pockets_cheap", "best_over_pockets_cheap", "best_score_cheap"],
+        }.items():
+            for key in keys:
+                if compare_block.get(key) is not None:
+                    resolved[dst] = compare_block.get(key)
+                    break
+        return resolved
+
+
+    @staticmethod
     def _load_paired_comparison_csv(csv_path: Path | None) -> list[dict[str, Any]]:
         """Carrega paired_comparison.csv quando disponível."""
 
@@ -323,6 +351,28 @@ class ReportsPage(BasePage):
         except (OSError, pd.errors.EmptyDataError):
             return []
         return frame.to_dict(orient="records")
+
+    def _load_fallback_metrics_series(
+        self,
+        base_dir: Path | None,
+        reduced_summary: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]] | None]:
+        """Carrega métricas do fallback_full quando reduced agregou via fallback."""
+
+        if not bool(reduced_summary.get("fallback_to_full")):
+            return None, None
+        fallback_outdir = reduced_summary.get("fallback_full_outdir")
+        if not fallback_outdir:
+            return None, None
+        fallback_dir = self._resolve_report_path(base_dir, str(fallback_outdir))
+        if fallback_dir is None or not fallback_dir.exists():
+            return None, None
+        metrics_ts_path = fallback_dir / "metrics.timeseries.jsonl"
+        metrics_path = fallback_dir / "metrics.jsonl"
+        ts_records = load_jsonl(metrics_ts_path) if metrics_ts_path.exists() else None
+        records = load_jsonl(metrics_path) if metrics_path.exists() else None
+        return records, ts_records
+
 
     def _render_kpis(self, summary_data: dict[str, Any], series: dict[str, Any] | None, key_suffix: str) -> None:
         st.subheader("Resumo do Gap")
@@ -385,8 +435,15 @@ class ReportsPage(BasePage):
                 "budget_policy": summary_data.get("budget_policy"),
                 "budget_delta": summary_data.get("budget_delta"),
                 "fallback_to_full": summary_data.get("fallback_to_full"),
+                "fallback_reason": summary_data.get("fallback_reason"),
+                "executed_mode": summary_data.get("executed_mode"),
+                "n_pockets_total": summary_data.get("n_pockets_total"),
+                "n_pockets_used": summary_data.get("n_pockets_used"),
             }
         )
+        if bool(summary_data.get("fallback_to_full")):
+            st.warning("Reduced sem bolsões viáveis; execução caiu em fallback para full")
+            st.caption(f"fallback_reason={summary_data.get('fallback_reason')} | n_pockets_used={summary_data.get('n_pockets_used')}")
         per_pocket = summary_data.get("per_pocket_results", [])
         if isinstance(per_pocket, list) and per_pocket:
             frame = pd.DataFrame(per_pocket)
@@ -402,10 +459,11 @@ class ReportsPage(BasePage):
 
         temp_dir = Path(tempfile.mkdtemp(prefix="reports_reduced_agg_"))
         pocket_png = temp_dir / "pocket_rank_effect.png"
-        if plot_pocket_rank_effect(summary_data, pocket_png) is None and pocket_png.exists():
-            self._render_png(pocket_png, "Custo/score por bolsão")
-        elif pocket_png.exists():
-            self._render_png(pocket_png, "Custo/score por bolsão")
+        if per_pocket:
+            if plot_pocket_rank_effect(summary_data, pocket_png) is None and pocket_png.exists():
+                self._render_png(pocket_png, "Custo/score por bolsão")
+            elif pocket_png.exists():
+                self._render_png(pocket_png, "Custo/score por bolsão")
 
     def _render_compare_report(
         self,
@@ -421,6 +479,16 @@ class ReportsPage(BasePage):
         """Renderiza relatório comparativo entre modos completo e reduzido."""
 
         st.subheader("Comparação: Completo vs Reduzido")
+        if self._is_reduced_aggregate_fallback(summary_reduced):
+            st.warning("Reduced sem bolsões viáveis; execução caiu em fallback para full")
+            st.caption(
+                f"fallback_reason={summary_reduced.get('fallback_reason')} | "
+                f"n_pockets_used={summary_reduced.get('n_pockets_used')}"
+            )
+            rejected = summary_reduced.get("rejected_pockets")
+            if isinstance(rejected, list) and rejected:
+                st.caption(f"rejected_pockets={len(rejected)}")
+
         rows = build_compare_table(bundle.main_json)
         if rows:
             st.subheader("Comparação avançada")
@@ -439,6 +507,9 @@ class ReportsPage(BasePage):
         series_reduced = extract_series(series_reduced_records or [])
         resumo_full = self._resumo_gap(series_full, summary_full)
         resumo_reduced = self._resumo_gap(series_reduced, summary_reduced)
+        if self._is_reduced_aggregate_fallback(summary_reduced):
+            reduced_block = self._extract_compare_block(bundle.main_json, "reduced")
+            resumo_reduced = self._resolve_compare_fallback_metrics(resumo_reduced, reduced_block)
 
         st.subheader("Tabela comparativa (KPIs)")
         st.table(pd.DataFrame([{"Modo": "Completo", **resumo_full}, {"Modo": "Reduzido", **resumo_reduced}]))
@@ -451,14 +522,17 @@ class ReportsPage(BasePage):
 
         cost_png = temp_dir / "cost_comparison.png"
         if plot_cost_comparison(resumo_full, resumo_reduced, cost_png):
-            self._render_png(cost_png, "Comparação de custo: runtime_sec e n_eval_total")
+            self._render_png(cost_png, "Comparação de custo: runtime_sec e n_eval_total (Reduced pode estar em fallback→full)")
         else:
             st.info("Sem dados suficientes para gráfico de custo.")
 
         reduction_full_png = temp_dir / "reduction_full.png"
         reduction_reduced_png = temp_dir / "reduction_reduced.png"
         has_full_reduction = plot_search_space_reduction({**summary_full, **resumo_full}, reduction_full_png)
-        has_reduced_reduction = plot_search_space_reduction({**summary_reduced, **resumo_reduced}, reduction_reduced_png)
+        if self._is_reduced_aggregate_fallback(summary_reduced):
+            has_reduced_reduction = False
+        else:
+            has_reduced_reduction = plot_search_space_reduction({**summary_reduced, **resumo_reduced}, reduction_reduced_png)
         if has_full_reduction or has_reduced_reduction:
             col1, col2 = st.columns(2)
             with col1:
@@ -471,7 +545,11 @@ class ReportsPage(BasePage):
             st.info("Sem dados suficientes para redução do espaço de busca.")
 
         convergence_png = temp_dir / "convergence_compare.png"
-        if plot_convergence({"full": series_full, "reduced": series_reduced}, convergence_png):
+        reduced_series_for_plot = series_reduced
+        if self._is_reduced_aggregate_fallback(summary_reduced) and not metrics_reduced and not metrics_reduced_timeseries:
+            st.info("Fallback no reduced sem dados de série temporal; curva Reduced ocultada.")
+            reduced_series_for_plot = {}
+        if plot_convergence({"full": series_full, "reduced": reduced_series_for_plot}, convergence_png):
             self._render_png(convergence_png, "Convergência: best_score_cheap vs n_eval_cumulative")
         else:
             st.info("Sem dados suficientes para convergência.")
@@ -691,10 +769,18 @@ class ReportsPage(BasePage):
             )
             summary_data = self._load_summary_data(summary_path, main_json)
             if metrics_records is None:
-                report_metrics_path = find_matching_jsonl(main_json_path) if main_json_path else None
+                report_metrics_path = self._resolve_report_path(
+                    self._resolve_report_path(base_dir, summary_data.get("outdir")),
+                    summary_data.get("metrics_path"),
+                )
                 if report_metrics_path and report_metrics_path.exists():
                     metrics_path = report_metrics_path
                     metrics_records = load_jsonl(metrics_path)
+                elif main_json_path:
+                    report_metrics_path = find_matching_jsonl(main_json_path)
+                    if report_metrics_path and report_metrics_path.exists():
+                        metrics_path = report_metrics_path
+                        metrics_records = load_jsonl(metrics_path)
         elif kind == "compare":
             full_block = self._extract_compare_block(main_json, "full") or {}
             reduced_block = self._extract_compare_block(main_json, "reduced") or {}
@@ -724,6 +810,12 @@ class ReportsPage(BasePage):
                 if report_reduced_path and report_reduced_path.exists():
                     metrics_reduced_path = report_reduced_path
                     metrics_reduced = load_jsonl(metrics_reduced_path)
+                else:
+                    fallback_records, fallback_timeseries = self._load_fallback_metrics_series(base_dir, summary_reduced)
+                    if fallback_records is not None:
+                        metrics_reduced = fallback_records
+                    if fallback_timeseries is not None:
+                        metrics_reduced = fallback_timeseries
 
         bundle = ReportBundle(
             kind=kind,

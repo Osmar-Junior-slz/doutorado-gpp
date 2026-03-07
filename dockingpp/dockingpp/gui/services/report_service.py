@@ -367,6 +367,16 @@ def build_compare_table(report_data: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         summary = _load_summary(block)
         label_name = "Completo" if label == "full" else "Reduzido"
+
+        is_reduced_aggregate = label == "reduced" and _lookup_metric(block, ["mode"], summary) == "reduced_aggregate"
+        best_score_keys = ["best_score_cheap", "best_score", "best"]
+        eval_keys = ["n_eval", "n_eval_total", "evals", "evaluations"]
+        runtime_keys = ["elapsed_s", "elapsed_seconds", "elapsed", "total_s"]
+        if is_reduced_aggregate:
+            best_score_keys = ["best_over_pockets_cheap", "best_score_cheap", "best_score", "best"]
+            eval_keys = ["total_n_eval", "n_eval_total", "n_eval", "evals", "evaluations"]
+            runtime_keys = ["total_runtime_sec", "elapsed_s", "elapsed_seconds", "elapsed", "total_s"]
+
         pockets_total = _lookup_metric(
             block,
             ["n_pockets_total", "pockets_total", "n_pockets_detected"],
@@ -386,28 +396,24 @@ def build_compare_table(report_data: dict[str, Any]) -> list[dict[str, Any]]:
                     reduction_ratio = used_val / total_val
             except (TypeError, ValueError):
                 reduction_ratio = None
-        # PT-BR: usamos chaves alternativas para compatibilidade retroativa.
+
         rows.append(
             {
                 "Modo": label_name,
-                "Melhor score (cheap)": _lookup_metric(
+                "Melhor score (cheap)": _lookup_metric(block, best_score_keys, summary),
+                "Melhor score (expensive)": _lookup_metric(
                     block,
-                    ["best_score_cheap", "best_score", "best"],
+                    ["best_over_pockets_expensive", "best_score_expensive", "best_expensive"],
                     summary,
                 ),
-                "Avaliações": _lookup_metric(
-                    block,
-                    ["n_eval", "n_eval_total", "evals", "evaluations"],
-                    summary,
-                ),
+                "Avaliações": _lookup_metric(block, eval_keys, summary),
                 "Bolsões totais": pockets_total,
                 "Bolsões usados": pockets_used,
                 "Razão de redução": reduction_ratio,
-                "Tempo (s)": _lookup_metric(
-                    block,
-                    ["elapsed_s", "elapsed_seconds", "elapsed", "total_s"],
-                    summary,
-                ),
+                "Tempo (s)": _lookup_metric(block, runtime_keys, summary),
+                "fallback_to_full": _lookup_metric(block, ["fallback_to_full"], summary),
+                "fallback_reason": _lookup_metric(block, ["fallback_reason"], summary),
+                "executed_mode": _lookup_metric(block, ["executed_mode"], summary),
             }
         )
     return rows
