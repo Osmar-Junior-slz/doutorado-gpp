@@ -1,22 +1,20 @@
-"""Módulo de relatórios para análise e visualização (PT-BR)."""
+"""Pacote de relatórios do dockingpp."""
 
-from dockingpp.reporting.loaders import extract_series, find_matching_jsonl, load_any_json, load_jsonl
-from dockingpp.reporting.plots import (
-    plot_cost_quality,
-    plot_filter_distribution,
-    plot_omega_reduction,
-    plot_pocket_rank_effect,
-    plot_score_stability,
-)
+from dockingpp.reporting.aggregates import compute_cost_quality, compute_pockets, compute_search_reduction
+from dockingpp.reporting.loaders import discover_run_dirs, load_report_bundle
+from dockingpp.reporting.models import ArtifactsManifest, MetricEvent, ReportBundle, RunSummary
+from dockingpp.reporting.normalize import optional_warnings, to_timeseries
 
 __all__ = [
-    "extract_series",
-    "find_matching_jsonl",
-    "load_any_json",
-    "load_jsonl",
-    "plot_cost_quality",
-    "plot_filter_distribution",
-    "plot_omega_reduction",
-    "plot_pocket_rank_effect",
-    "plot_score_stability",
+    "RunSummary",
+    "MetricEvent",
+    "ArtifactsManifest",
+    "ReportBundle",
+    "discover_run_dirs",
+    "load_report_bundle",
+    "optional_warnings",
+    "to_timeseries",
+    "compute_search_reduction",
+    "compute_cost_quality",
+    "compute_pockets",
 ]

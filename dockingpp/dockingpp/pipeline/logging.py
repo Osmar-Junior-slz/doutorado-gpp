@@ -1,104 +1,71 @@
-"""Utilitários de logging para o dockingpp."""
+"""Logging estruturado de execução em JSONL/JSON."""
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from dockingpp.reporting.models import ArtifactsManifest, MetricEvent, RunSummary
 
 
 @dataclass
 class RunLogger:
-    """Logger em memória com opção de escrita incremental no JSONL.
+    run_id: str
+    out_dir: str
+    records: list[dict[str, Any]] = field(default_factory=list)
 
-    PT-BR: o problema do progresso "travado" acontecia porque o metrics.jsonl
-    era escrito apenas no final (flush), então a UI não tinha dados novos para
-    ler durante a execução. A correção habilita gravação incremental por métrica
-    quando live_write=True, mantendo o flush final para consistência.
-    """
+    def __post_init__(self) -> None:
+        Path(self.out_dir).mkdir(parents=True, exist_ok=True)
+        self.metrics_path = Path(self.out_dir) / "metrics.jsonl"
 
-    records: List[Dict[str, Any]] = field(default_factory=list)
-    out_dir: str | None = None
-    live_write: bool = False
-
-    def log_metric(self, name: str, value: float, step: int, extra: Optional[Dict[str, Any]] = None) -> None:
-        """Registra uma métrica no buffer e, opcionalmente, no JSONL incremental.
-
-        PT-BR: "step" representa o índice global (ex.: pocket * gerações + geração)
-        usado para séries temporais. Para progresso correto, esperamos um campo
-        extra "generation" com a geração local [0..N], evitando valores > N na UI.
-        """
-
-        extras: Dict[str, Any] = dict(extra or {})
-        generation = extras.get("generation")
-        pocket_index = extras.get("pocket_index")
-        payload: Dict[str, Any] = {
-            "step": int(step),
-            "pocket_index": int(pocket_index) if pocket_index is not None else None,
-            "generation": int(generation) if generation is not None else None,
-            "name": name,
-            "value": float(value) if value is not None else None,
-        }
-        if extras:
-            payload["extras"] = extras
-            for key, val in extras.items():
-                if key not in payload:
-                    payload[key] = val
+    def emit_event(self, event: str, **kwargs: Any) -> None:
+        payload = MetricEvent(event=event, run_id=self.run_id, **kwargs).model_dump(mode="json")
         self.records.append(payload)
-        self._append_record(payload)
+        with self.metrics_path.open("a", encoding="utf-8") as h:
+            h.write(json.dumps(payload) + "\n")
 
-    def _append_record(self, payload: Dict[str, Any]) -> None:
-        """Escreve o payload incrementalmente no metrics.jsonl (quando habilitado)."""
+    def log_metric(self, name: str, value: float, step: int, extra: dict[str, Any] | None = None) -> None:
+        context = dict(extra or {})
+        context["metric_name"] = name
+        context["metric_value"] = value
+        event = "search_iteration"
+        if name in {"expensive_ran", "expensive_skipped"}:
+            event = "expensive_eval" if name == "expensive_ran" else "trigger_expensive"
+        self.emit_event(
+            event,
+            step=step,
+            value=value,
+            pocket_index=context.get("pocket_index"),
+            pocket_id=context.get("pocket_id"),
+            reason=context.get("reason"),
+            context=context,
+        )
 
-        if not self.live_write or not self.out_dir:
-            return
-        # PT-BR: escrita incremental garante atualização em tempo real para a UI.
-        path = f"{self.out_dir}/metrics.jsonl"
-        with open(path, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload) + "\n")
+    def save_summary(self, summary: RunSummary) -> None:
+        path = Path(self.out_dir) / "summary.json"
+        path.write_text(json.dumps(summary.model_dump(mode="json"), indent=2), encoding="utf-8")
 
-    def log_global_metrics(self, total_pockets: int, used_pockets: int) -> None:
-        """Store global metrics about pocket selection.
+    def save_manifest(self, status: str) -> None:
+        manifest = ArtifactsManifest(
+            run_id=self.run_id,
+            out_dir=self.out_dir,
+            status=status,
+            files={
+                "summary": "summary.json",
+                "metrics": "metrics.jsonl",
+                "manifest": "artifacts_manifest.json",
+            },
+        )
+        path = Path(self.out_dir) / "artifacts_manifest.json"
+        path.write_text(json.dumps(manifest.model_dump(mode="json"), indent=2), encoding="utf-8")
 
-        PT-BR: "n_pockets_total" é o total detectado, "n_pockets_used" é o
-        conjunto realmente explorado. O "reduction_ratio" mede a fração de
-        redução do espaço de busca (1 - used/total), devendo ser > 0 quando
-        total > used.
-        """
-
-        reduction_ratio = 0.0
-        if total_pockets > 0:
-            reduction_ratio = max(0.0, 1.0 - (used_pockets / total_pockets))
-        self.log_metric("n_pockets_total", float(total_pockets), step=0)
-        self.log_metric("n_pockets_used", float(used_pockets), step=0)
-        self.log_metric("reduction_ratio", float(reduction_ratio), step=0)
-
-    def flush(self, out_dir: str) -> None:
-        """Write metrics to disk."""
-
-        path = f"{out_dir}/metrics.jsonl"
-        with open(path, "w", encoding="utf-8") as handle:
-            for record in self.records:
-                handle.write(json.dumps(record) + "\n")
-
-    def flush_timeseries(self, out_dir: str, mode: str | None = None) -> None:
-        """Write per-step metrics to disk."""
-
-        steps: Dict[int, Dict[str, Any]] = {}
-        for record in self.records:
-            step = record.get("step")
-            name = record.get("name")
-            value = record.get("value")
-            if step is None or name is None:
-                continue
-            entry = steps.setdefault(int(step), {"step": int(step)})
-            entry[name] = value
-
-        if mode:
-            for entry in steps.values():
-                entry["mode"] = mode
-
-        path = f"{out_dir}/metrics.timeseries.jsonl"
-        with open(path, "w", encoding="utf-8") as handle:
-            for step in sorted(steps):
-                handle.write(json.dumps(steps[step]) + "\n")
+    def safe_log_error(self, exc: Exception) -> None:
+        self.emit_event(
+            "run_failed",
+            reason=type(exc).__name__,
+            context={"error": str(exc)},
+            ts=datetime.utcnow(),
+        )

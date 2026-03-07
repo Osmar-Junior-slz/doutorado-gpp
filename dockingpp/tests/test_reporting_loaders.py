@@ -1,141 +1,45 @@
-"""Testes para loaders de relatórios (PT-BR)."""
-
-from __future__ import annotations
-
 import json
 from pathlib import Path
 
-from dockingpp.reporting.loaders import (
-    extract_series,
-    find_report_runs,
-    load_jsonl,
-    pair_full_reduced,
-)
+from dockingpp.reporting.loaders import load_report_bundle
 
 
-def test_load_jsonl_tolerante_e_extract_series_com_faltas(tmp_path: Path) -> None:
-    """Garante que JSONL inválido não quebra e que faltas são registradas."""
-
-    jsonl_path = tmp_path / "metrics.jsonl"
-    linhas = [
-        json.dumps({"step": 0, "best_score_cheap": 1.0}),
-        "linha invalida",
-        json.dumps({"generation": 1, "n_eval_total": 5}),
-    ]
-    jsonl_path.write_text("\n".join(linhas), encoding="utf-8")
-
-    eventos = load_jsonl(jsonl_path)
-    assert len(eventos) == 2
-
-    series = extract_series(eventos)
-    assert "missing" in series
-    assert series["iter"] == [0, 1]
-    assert len(series["best_cheap"]) == 2
-    assert series["missing"]["best_expensive"] == 2
-
-
-def test_find_report_runs_full_reduced_pair(tmp_path: Path) -> None:
-    """Garante que runs full/reduced são identificados e pareados."""
-
-    full_dir = tmp_path / "full_run"
-    reduced_dir = tmp_path / "reduced_run"
-    full_dir.mkdir()
-    reduced_dir.mkdir()
-
-    (full_dir / "config_any.json").write_text(
+def test_loader_summary_metrics_manifest(tmp_path: Path) -> None:
+    run = tmp_path / "run1"
+    run.mkdir()
+    (run / "summary.json").write_text(
         json.dumps(
             {
-                "seed": 1,
-                "generations": 10,
-                "pop_size": 20,
-                "full_search": True,
-                "search_space_mode": "global",
-            }
-        ),
-        encoding="utf-8",
-    )
-    (full_dir / "summary_any.json").write_text(
-        json.dumps(
-            {
-                "timing": {"total_s": 12.0},
-                "best_score_cheap": 0.9,
+                "run_id": "a",
+                "status": "success",
                 "mode": "single",
-                "search_space_mode": "global",
+                "engine": "e",
+                "receptor": "r",
+                "peptide": "p",
+                "runtime_sec": 1,
+                "omega_full": 2,
+                "omega_reduced": 1,
+                "omega_ratio": 0.5,
+                "n_pockets_total": 2,
+                "n_pockets_selected": 1,
+                "n_evals_cheap": 5,
+                "n_evals_expensive": 1,
+                "best_score_cheap": 0.2,
+                "best_score_expensive": 0.1,
+                "confidence_final": 0.9,
+                "trigger_count_expensive": 1,
             }
         ),
         encoding="utf-8",
     )
-    (full_dir / "result_any.json").write_text(
-        json.dumps(
-            {
-                "run_id": "full-1",
-                "best_cheap_by_pocket": {},
-                "n_eval_total": 100,
-            }
-        ),
-        encoding="utf-8",
-    )
-    (full_dir / "metrics.jsonl").write_text(json.dumps({"step": 0, "best_score_cheap": 0.9}), encoding="utf-8")
-
-    (reduced_dir / "config_other.json").write_text(
-        json.dumps(
-            {
-                "seed": 2,
-                "generations": 5,
-                "pop_size": 10,
-                "full_search": False,
-                "search_space_mode": "pockets",
-            }
-        ),
-        encoding="utf-8",
-    )
-    (reduced_dir / "summary_other.json").write_text(
-        json.dumps(
-            {
-                "timing": {"total_s": 4.0},
-                "best_score_cheap": 0.7,
-                "mode": "single",
-                "search_space_mode": "pockets",
-            }
-        ),
-        encoding="utf-8",
-    )
-    (reduced_dir / "result_other.json").write_text(
-        json.dumps(
-            {
-                "run_id": "reduced-1",
-                "best_cheap_by_pocket": {},
-                "n_eval_total": 50,
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    runs = find_report_runs(tmp_path)
-    assert len(runs) == 2
-    kinds = {run.kind for run in runs}
-    assert kinds == {"full", "reduced"}
-
-    full_run, reduced_run = pair_full_reduced(runs)
-    assert full_run is not None
-    assert reduced_run is not None
-    assert full_run.kind == "full"
-    assert reduced_run.kind == "reduced"
+    (run / "metrics.jsonl").write_text(json.dumps({"event": "run_started", "run_id": "a"}) + "\n", encoding="utf-8")
+    bundle = load_report_bundle(run)
+    assert bundle.summary.run_id == "a"
 
 
-def test_extract_series_maps_pipeline_metric_names(tmp_path: Path) -> None:
-    """Garante mapeamento de aliases usados pelo pipeline atual."""
-
-    records = [
-        {"step": 0, "name": "best_score", "value": 1.25, "pocket_index": 0},
-        {"step": 0, "name": "n_eval", "value": 20},
-        {"step": 0, "name": "selected_pockets", "value": 3},
-        {"step": 1, "name": "best_score", "value": 1.75, "pocket_index": 0},
-        {"step": 1, "name": "n_eval", "value": 40},
-    ]
-
-    series = extract_series(records)
-
-    assert series["best_cheap"] == [1.25, None, None, 1.75, None]
-    assert series["n_eval_total"] == [None, 20, None, None, 40]
-    assert series["n_selected"] == [None, None, 3, None, None]
+def test_loader_legacy_format(tmp_path: Path) -> None:
+    run = tmp_path / "legacy"
+    run.mkdir()
+    (run / "summary.json").write_text(json.dumps({"run_id": "old", "n_pockets_detected": 8, "n_eval_total": 100}), encoding="utf-8")
+    bundle = load_report_bundle(run)
+    assert bundle.summary.n_pockets_total == 8
