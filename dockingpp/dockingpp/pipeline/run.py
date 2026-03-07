@@ -125,6 +125,7 @@ def _cfg_value(cfg: Optional[Any], key: str, default: Any) -> Any:
 def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: str) -> RunResult:
     """Executa o pipeline de docking."""
 
+    run_id = datetime.utcnow().isoformat() + "Z"
     start_total = time.perf_counter()
     np.random.seed(cfg.seed)
     # PT-BR: criamos o diretório antes do logger para permitir escrita incremental
@@ -134,7 +135,7 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
     debug_log_path = getattr(cfg, "debug_log_path", None) or os.path.join(out_dir, "debug", "debug.jsonl")
     debug_log_level = str(getattr(cfg, "debug_log_level", "INFO"))
     debug_logger = DebugLogger(enabled=debug_log_enabled, path=debug_log_path, level=debug_log_level)
-    debug_logger.run_id = datetime.utcnow().isoformat() + "Z"
+    debug_logger.run_id = run_id
     cfg.debug_logger = debug_logger
 
     config_mode = "full" if getattr(cfg, "full_search", True) else "reduced"
@@ -166,6 +167,7 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
         cfg.expensive_logger = logger
         search_scope_mode = getattr(cfg, "search_space_mode", "global")
         search_space_mode = "full" if getattr(cfg, "full_search", True) else "reduced"
+        pocketing_start = time.perf_counter()
         if search_scope_mode == "global":
             pockets = [_build_global_pocket(receptor, cfg)]
             total_pockets = 1
@@ -198,6 +200,7 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
                     max_pockets_used = len(ranked)
                 pockets = [pocket for pocket, _ in ranked[:max_pockets_used]]
             selected_pockets = len(pockets)
+        pocketing_time = time.perf_counter() - pocketing_start
 
         scan_cfg = _cfg_value(cfg, "scan", None)
         scan_enabled = bool(_cfg_value(scan_cfg, "enabled", False))
@@ -356,7 +359,7 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
             runtime_sec = end_total - start_total
             payload = {
                 "mode": "single",
-                "run_id": datetime.utcnow().isoformat() + "Z",
+                "run_id": run_id,
                 "best_score_cheap": result.best_pose.score_cheap,
                 "best_score_expensive": result.best_pose.score_expensive,
                 "best_pose_id": best_pose_id,
@@ -369,6 +372,8 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
                     "total_s": runtime_sec,
                     "scoring_cheap_s": None,
                     "scoring_expensive_s": None,
+                    "pocketing_s": pocketing_time,
+                    "scan_s": scan_time,
                     "search_s": end_search - start_search,
                 },
             }
@@ -379,10 +384,15 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
         logger.flush_timeseries(out_dir, mode=mode_label)
         _write_summary(
             out_dir=out_dir,
-            run_id=datetime.utcnow().isoformat() + "Z",
+            run_id=run_id,
             mode="single",
+            receptor_path=receptor_path,
+            peptide_path=peptide_path,
             search_space_mode=search_space_mode,
             runtime_sec=end_total - start_total,
+            search_time_sec=end_search - start_search,
+            pocketing_sec=pocketing_time,
+            scan_sec=scan_time,
             total_pockets=total_pockets,
             selected_pockets=selected_pockets,
             best_score_cheap=result.best_pose.score_cheap,
@@ -422,8 +432,13 @@ def _write_summary(
     out_dir: str,
     run_id: str,
     mode: str,
+    receptor_path: str,
+    peptide_path: str,
     search_space_mode: str,
     runtime_sec: float,
+    search_time_sec: float,
+    pocketing_sec: float,
+    scan_sec: float,
     total_pockets: int,
     selected_pockets: int,
     best_score_cheap: float | None,
@@ -476,18 +491,58 @@ def _write_summary(
     if total_pockets > 0:
         reduction_ratio = max(0.0, 1.0 - (float(selected_pockets) / float(total_pockets)))
 
+    input_id = getattr(config_resolved_subset, "input_id", None)
+    if input_id is None and isinstance(config_resolved_subset, dict):
+        input_id = config_resolved_subset.get("input_id")
+    if input_id is None:
+        receptor_name = os.path.basename(receptor_path) if receptor_path else ""
+        peptide_name = os.path.basename(peptide_path) if peptide_path else ""
+        if receptor_name and peptide_name:
+            input_id = f"{receptor_name}__{peptide_name}"
+        elif receptor_name:
+            input_id = receptor_name
+        elif peptide_name:
+            input_id = peptide_name
+        else:
+            input_id = None
+    complex_id = None
+    if isinstance(config_resolved_subset, dict):
+        complex_id = config_resolved_subset.get("complex_id")
+        if complex_id is None:
+            complex_id = config_resolved_subset.get("input_id")
+
+    expensive_every = int(getattr(config_resolved_subset, "expensive_every", 0) or 0)
+    if isinstance(config_resolved_subset, dict):
+        expensive_every = int(config_resolved_subset.get("expensive_every", 0) or 0)
+    expensive_topk = None
+    if isinstance(config_resolved_subset, dict):
+        expensive_topk = config_resolved_subset.get("expensive_topk")
+    expensive_enabled = expensive_every > 0
+    expensive_policy = {
+        "every": expensive_every,
+        "topk": expensive_topk,
+    }
+
     summary_payload = {
         "run_id": run_id,
-        "mode": mode,
+        "complex_id": complex_id,
+        "input_id": input_id,
+        "seed": config_resolved_subset.get("seed") if isinstance(config_resolved_subset, dict) else None,
         "search_space_mode": search_space_mode,
         "runtime_sec": runtime_sec,
-        "n_pockets_total": total_pockets,
-        "reduction_ratio": reduction_ratio,
+        "search_time_sec": search_time_sec,
+        "pocketing_sec": pocketing_sec,
+        "scan_sec": scan_sec,
         "n_eval_total": int(n_eval_total),
-        "n_pockets_detected": total_pockets,
+        "n_pockets_total": total_pockets,
         "n_pockets_used": selected_pockets,
+        "reduction_ratio": reduction_ratio,
         "best_score_cheap": best_score_cheap,
         "best_score_expensive": best_score_expensive,
+        "expensive_enabled": expensive_enabled,
+        "expensive_policy": expensive_policy,
+        "mode": mode,
+        "n_pockets_detected": total_pockets,
         "expensive_ran_count": int(expensive_ran),
         "expensive_skipped_count": int(expensive_skipped),
         "best_cheap_by_pocket": best_cheap_by_pocket,
