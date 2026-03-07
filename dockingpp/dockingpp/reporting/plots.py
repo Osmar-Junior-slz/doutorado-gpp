@@ -17,9 +17,9 @@ def plot_cost_comparison(full: dict[str, Any], reduced: dict[str, Any], out_png:
     """Compara custo computacional final entre Full e Reduced."""
 
     runtime_full = _buscar_numero(full, ["runtime_total_s", "total_s", "elapsed_s", "runtime_s"])
-    runtime_reduced = _buscar_numero(reduced, ["runtime_total_s", "total_s", "elapsed_s", "runtime_s"])
+    runtime_reduced = _buscar_numero(reduced, ["runtime_total_s", "reduced_total_runtime_sec", "total_runtime_sec", "total_s", "elapsed_s", "runtime_s"])
     eval_full = _buscar_numero(full, ["n_eval_total"])
-    eval_reduced = _buscar_numero(reduced, ["n_eval_total"])
+    eval_reduced = _buscar_numero(reduced, ["n_eval_total", "reduced_total_n_eval", "total_n_eval"])
     if runtime_full is None and runtime_reduced is None and eval_full is None and eval_reduced is None:
         return False
 

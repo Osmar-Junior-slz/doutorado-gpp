@@ -24,6 +24,21 @@ _CANDIDATAS_SERIES: dict[str, list[str]] = {
 RunKind = Literal["full", "reduced", "unknown"]
 
 
+def normalize_search_space_mode(mode: Any) -> str | None:
+    """Normaliza search_space_mode para {full,reduced} no domínio interno."""
+
+    if mode is None:
+        return None
+    lowered = str(mode).strip().lower()
+    if lowered == "global":
+        return "full"
+    if lowered == "pockets":
+        return "reduced"
+    if lowered in {"full", "reduced"}:
+        return lowered
+    return None
+
+
 @dataclass(frozen=True)
 class ReportRun:
     """Describe os arquivos associados a uma execução."""
@@ -192,7 +207,7 @@ def _infer_run_kind(payloads: Iterable[dict[str, Any]]) -> RunKind:
             full_signal = True
         elif full_search is False:
             reduced_signal = True
-        search_space_mode = _extract_flag(payload, "search_space_mode")
+        search_space_mode = normalize_search_space_mode(_extract_flag(payload, "search_space_mode"))
         if search_space_mode == "full":
             full_signal = True
         elif search_space_mode == "reduced":
