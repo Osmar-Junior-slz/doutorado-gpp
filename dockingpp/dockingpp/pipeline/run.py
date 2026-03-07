@@ -164,8 +164,9 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
         # progresso correto; o "step" permanece como contador global para séries.
         logger = RunLogger(out_dir=out_dir, live_write=True)
         cfg.expensive_logger = logger
-        search_space_mode = getattr(cfg, "search_space_mode", "global")
-        if search_space_mode == "global":
+        search_scope_mode = getattr(cfg, "search_space_mode", "global")
+        search_space_mode = "full" if getattr(cfg, "full_search", True) else "reduced"
+        if search_scope_mode == "global":
             pockets = [_build_global_pocket(receptor, cfg)]
             total_pockets = 1
             selected_pockets = 1
@@ -337,6 +338,7 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
             "pop_size": cfg.pop_size,
             "topk": cfg.topk,
             "search_space_mode": search_space_mode,
+            "search_scope_mode": search_scope_mode,
             "full_search": bool(getattr(cfg, "full_search", True)),
             "top_pockets": int(getattr(cfg, "top_pockets", 0) or 0),
             "max_pockets_used": int(getattr(cfg, "max_pockets_used", 0) or 0),
@@ -351,17 +353,20 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
 
         result_path = os.path.join(out_dir, "result.json")
         with open(result_path, "w", encoding="utf-8") as handle:
+            runtime_sec = end_total - start_total
             payload = {
                 "mode": "single",
+                "run_id": datetime.utcnow().isoformat() + "Z",
                 "best_score_cheap": result.best_pose.score_cheap,
                 "best_score_expensive": result.best_pose.score_expensive,
                 "best_pose_id": best_pose_id,
                 "n_pockets_detected": total_pockets,
                 "n_pockets_used": selected_pockets,
                 "search_space_mode": search_space_mode,
+                "runtime_sec": runtime_sec,
                 "config_resolved_subset": config_resolved_subset,
                 "timing": {
-                    "total_s": end_total - start_total,
+                    "total_s": runtime_sec,
                     "scoring_cheap_s": None,
                     "scoring_expensive_s": None,
                     "search_s": end_search - start_search,
@@ -376,6 +381,8 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
             out_dir=out_dir,
             run_id=datetime.utcnow().isoformat() + "Z",
             mode="single",
+            search_space_mode=search_space_mode,
+            runtime_sec=end_total - start_total,
             total_pockets=total_pockets,
             selected_pockets=selected_pockets,
             best_score_cheap=result.best_pose.score_cheap,
@@ -415,6 +422,8 @@ def _write_summary(
     out_dir: str,
     run_id: str,
     mode: str,
+    search_space_mode: str,
+    runtime_sec: float,
     total_pockets: int,
     selected_pockets: int,
     best_score_cheap: float | None,
@@ -463,17 +472,24 @@ def _write_summary(
             {"pocket_id": best_pose_pocket_id, "best_score_expensive": best_score_expensive}
         )
 
+    reduction_ratio = 0.0
+    if total_pockets > 0:
+        reduction_ratio = max(0.0, 1.0 - (float(selected_pockets) / float(total_pockets)))
+
     summary_payload = {
         "run_id": run_id,
         "mode": mode,
+        "search_space_mode": search_space_mode,
+        "runtime_sec": runtime_sec,
+        "n_pockets_total": total_pockets,
+        "reduction_ratio": reduction_ratio,
+        "n_eval_total": int(n_eval_total),
         "n_pockets_detected": total_pockets,
         "n_pockets_used": selected_pockets,
-        "search_space_mode": config_resolved_subset.get("search_space_mode"),
         "best_score_cheap": best_score_cheap,
         "best_score_expensive": best_score_expensive,
         "expensive_ran_count": int(expensive_ran),
         "expensive_skipped_count": int(expensive_skipped),
-        "n_eval_total": n_eval_total,
         "best_cheap_by_pocket": best_cheap_by_pocket,
         "best_expensive_by_pocket": best_expensive_by_pocket,
         "config_resolved_subset": config_resolved_subset,

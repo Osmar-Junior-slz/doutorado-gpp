@@ -85,14 +85,28 @@ class RunLogger:
         """Write per-step metrics to disk."""
 
         steps: Dict[int, Dict[str, Any]] = {}
+        cumulative_eval = 0.0
+        cumulative_expensive = 0.0
         for record in self.records:
             step = record.get("step")
             name = record.get("name")
             value = record.get("value")
             if step is None or name is None:
                 continue
-            entry = steps.setdefault(int(step), {"step": int(step)})
+            step_i = int(step)
+            entry = steps.setdefault(step_i, {"step": step_i})
             entry[name] = value
+            if name == "best_score":
+                entry["best_score_cheap"] = value
+            generation = record.get("generation")
+            if generation is not None:
+                entry["generation"] = int(generation)
+            if name == "n_eval" and value is not None:
+                cumulative_eval += float(value)
+            if name == "expensive_ran" and value is not None:
+                cumulative_expensive += float(value)
+            entry["n_eval_cumulative"] = cumulative_eval
+            entry["expensive_ran_cumulative"] = cumulative_expensive
 
         if mode:
             for entry in steps.values():
