@@ -104,6 +104,16 @@ def _build_report_run(run_dir: Path) -> ReportRun | None:
         elif role == "config":
             config_path = path
 
+        # PT-BR: compatibilidade com artefatos legados onde o result.json não
+        # tem campos suficientes para classificação estrita.
+        name = path.name.lower()
+        if name == "summary.json" and summary_path is None:
+            summary_path = path
+        elif name == "result.json" and result_path is None:
+            result_path = path
+        elif name == "config.json" and config_path is None:
+            config_path = path
+
     kind = _infer_run_kind(payloads)
     metrics_path = run_dir / "metrics.jsonl"
     metrics_timeseries_path = run_dir / "metrics.timeseries.jsonl"
