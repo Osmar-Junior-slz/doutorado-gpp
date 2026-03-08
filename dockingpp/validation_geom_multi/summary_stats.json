@@ -1,0 +1,8 @@
+{
+  "n_cases": 5,
+  "fallback_reduced_in_cases": 5,
+  "geom_selected_useful_pockets_in_cases": 5,
+  "operational_improvement_cases": 5,
+  "acceptable_cost_cases": 5,
+  "note_eval_64": "O valor total_n_eval=64 corresponde ao budget do docking/search (generations*pop_size), n\u00e3o ao scan; scan_eval_budget \u00e9 separado como samples_per_pocket*n_pockets_scanned."
+}

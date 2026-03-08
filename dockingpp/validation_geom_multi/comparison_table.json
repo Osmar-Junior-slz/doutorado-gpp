@@ -1,0 +1,67 @@
+[
+  {
+    "case_id": "case_01_dual_cluster_near",
+    "legacy_selected_count": 0,
+    "geom_selected_count": 2,
+    "legacy_fallback": true,
+    "geom_fallback": false,
+    "legacy_best_score": 1129.0,
+    "geom_best_score": 1137.0,
+    "legacy_runtime": 0.19133503599732649,
+    "geom_runtime": 0.12289925899676746,
+    "legacy_total_eval": 64,
+    "geom_total_eval": 64
+  },
+  {
+    "case_id": "case_02_dual_cluster_mid",
+    "legacy_selected_count": 0,
+    "geom_selected_count": 2,
+    "legacy_fallback": true,
+    "geom_fallback": false,
+    "legacy_best_score": 1332.5,
+    "geom_best_score": 1222.0,
+    "legacy_runtime": 0.13771417600219138,
+    "geom_runtime": 0.09092963099465123,
+    "legacy_total_eval": 64,
+    "geom_total_eval": 64
+  },
+  {
+    "case_id": "case_03_tri_cluster",
+    "legacy_selected_count": 0,
+    "geom_selected_count": 2,
+    "legacy_fallback": true,
+    "geom_fallback": false,
+    "legacy_best_score": 2578.5,
+    "geom_best_score": 859.0,
+    "legacy_runtime": 0.2341042030020617,
+    "geom_runtime": 0.14263429100174108,
+    "legacy_total_eval": 64,
+    "geom_total_eval": 64
+  },
+  {
+    "case_id": "case_04_spread_chain",
+    "legacy_selected_count": 0,
+    "geom_selected_count": 2,
+    "legacy_fallback": true,
+    "geom_fallback": false,
+    "legacy_best_score": 1412.5,
+    "geom_best_score": 639.0,
+    "legacy_runtime": 0.16572092799833626,
+    "geom_runtime": 0.10649462700530421,
+    "legacy_total_eval": 64,
+    "geom_total_eval": 64
+  },
+  {
+    "case_id": "case_05_compact_dense",
+    "legacy_selected_count": 0,
+    "geom_selected_count": 2,
+    "legacy_fallback": true,
+    "geom_fallback": false,
+    "legacy_best_score": 1644.5,
+    "geom_best_score": 1484.0,
+    "legacy_runtime": 0.11830973999894923,
+    "geom_runtime": 0.08234095599254942,
+    "legacy_total_eval": 64,
+    "geom_total_eval": 64
+  }
+]

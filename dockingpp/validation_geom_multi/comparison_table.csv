@@ -1,0 +1,6 @@
+case_id,legacy_selected_count,geom_selected_count,legacy_fallback,geom_fallback,legacy_best_score,geom_best_score,legacy_runtime,geom_runtime,legacy_total_eval,geom_total_eval
+case_01_dual_cluster_near,0,2,True,False,1129.0,1137.0,0.19133503599732649,0.12289925899676746,64,64
+case_02_dual_cluster_mid,0,2,True,False,1332.5,1222.0,0.13771417600219138,0.09092963099465123,64,64
+case_03_tri_cluster,0,2,True,False,2578.5,859.0,0.2341042030020617,0.14263429100174108,64,64
+case_04_spread_chain,0,2,True,False,1412.5,639.0,0.16572092799833626,0.10649462700530421,64,64
+case_05_compact_dense,0,2,True,False,1644.5,1484.0,0.11830973999894923,0.08234095599254942,64,64

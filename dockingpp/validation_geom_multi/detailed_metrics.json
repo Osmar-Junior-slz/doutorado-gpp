@@ -1,0 +1,247 @@
+[
+  {
+    "case_id": "case_01_dual_cluster_near",
+    "inputs": {
+      "receptor_path": "validation_geom_multi/inputs/case_01_dual_cluster_near_receptor.pdb",
+      "peptide_path": "validation_geom_multi/inputs/case_01_dual_cluster_near_peptide.pdb"
+    },
+    "legacy": {
+      "selected_pockets": [],
+      "rejected_pockets": [
+        {
+          "pocket_id": "auto_grid_2",
+          "reason": "feasible_fraction<=0.0"
+        },
+        {
+          "pocket_id": "auto_grid_1",
+          "reason": "feasible_fraction<=0.0"
+        }
+      ],
+      "fallback_to_full": true,
+      "n_pockets_used": 0,
+      "best_pocket_id": "global",
+      "best_over_pockets_cheap": 1129.0,
+      "total_n_eval_reduced": 64,
+      "total_runtime_sec_reduced": 0.19133503599732649,
+      "full_corresponding_total_n_eval": 64,
+      "full_corresponding_total_runtime_sec": 0.04706337399693439,
+      "scan_eval_budget": 192,
+      "docking_eval_budget": 64,
+      "total_eval_budget_pipeline": 256
+    },
+    "geom_kdtree": {
+      "selected_pockets": [
+        "auto_grid_1",
+        "auto_grid_0"
+      ],
+      "rejected_pockets": [],
+      "fallback_to_full": false,
+      "n_pockets_used": 2,
+      "best_pocket_id": "auto_grid_0",
+      "best_over_pockets_cheap": 1137.0,
+      "total_n_eval_reduced": 64,
+      "total_runtime_sec_reduced": 0.12289925899676746,
+      "full_corresponding_total_n_eval": 64,
+      "full_corresponding_total_runtime_sec": 0.04706337399693439,
+      "scan_eval_budget": 192,
+      "docking_eval_budget": 64,
+      "total_eval_budget_pipeline": 256
+    }
+  },
+  {
+    "case_id": "case_02_dual_cluster_mid",
+    "inputs": {
+      "receptor_path": "validation_geom_multi/inputs/case_02_dual_cluster_mid_receptor.pdb",
+      "peptide_path": "validation_geom_multi/inputs/case_02_dual_cluster_mid_peptide.pdb"
+    },
+    "legacy": {
+      "selected_pockets": [],
+      "rejected_pockets": [
+        {
+          "pocket_id": "auto_grid_0",
+          "reason": "feasible_fraction<=0.0"
+        },
+        {
+          "pocket_id": "auto_grid_2",
+          "reason": "feasible_fraction<=0.0"
+        }
+      ],
+      "fallback_to_full": true,
+      "n_pockets_used": 0,
+      "best_pocket_id": "global",
+      "best_over_pockets_cheap": 1332.5,
+      "total_n_eval_reduced": 64,
+      "total_runtime_sec_reduced": 0.13771417600219138,
+      "full_corresponding_total_n_eval": 64,
+      "full_corresponding_total_runtime_sec": 0.05315437300305348,
+      "scan_eval_budget": 128,
+      "docking_eval_budget": 64,
+      "total_eval_budget_pipeline": 192
+    },
+    "geom_kdtree": {
+      "selected_pockets": [
+        "auto_grid_0",
+        "auto_grid_2"
+      ],
+      "rejected_pockets": [],
+      "fallback_to_full": false,
+      "n_pockets_used": 2,
+      "best_pocket_id": "auto_grid_0",
+      "best_over_pockets_cheap": 1222.0,
+      "total_n_eval_reduced": 64,
+      "total_runtime_sec_reduced": 0.09092963099465123,
+      "full_corresponding_total_n_eval": 64,
+      "full_corresponding_total_runtime_sec": 0.05315437300305348,
+      "scan_eval_budget": 128,
+      "docking_eval_budget": 64,
+      "total_eval_budget_pipeline": 192
+    }
+  },
+  {
+    "case_id": "case_03_tri_cluster",
+    "inputs": {
+      "receptor_path": "validation_geom_multi/inputs/case_03_tri_cluster_receptor.pdb",
+      "peptide_path": "validation_geom_multi/inputs/case_03_tri_cluster_peptide.pdb"
+    },
+    "legacy": {
+      "selected_pockets": [],
+      "rejected_pockets": [
+        {
+          "pocket_id": "auto_grid_3",
+          "reason": "feasible_fraction<=0.0"
+        },
+        {
+          "pocket_id": "auto_grid_0",
+          "reason": "feasible_fraction<=0.0"
+        }
+      ],
+      "fallback_to_full": true,
+      "n_pockets_used": 0,
+      "best_pocket_id": "global",
+      "best_over_pockets_cheap": 2578.5,
+      "total_n_eval_reduced": 64,
+      "total_runtime_sec_reduced": 0.2341042030020617,
+      "full_corresponding_total_n_eval": 64,
+      "full_corresponding_total_runtime_sec": 0.05046505199788953,
+      "scan_eval_budget": 256,
+      "docking_eval_budget": 64,
+      "total_eval_budget_pipeline": 320
+    },
+    "geom_kdtree": {
+      "selected_pockets": [
+        "auto_grid_3",
+        "auto_grid_1"
+      ],
+      "rejected_pockets": [],
+      "fallback_to_full": false,
+      "n_pockets_used": 2,
+      "best_pocket_id": "auto_grid_1",
+      "best_over_pockets_cheap": 859.0,
+      "total_n_eval_reduced": 64,
+      "total_runtime_sec_reduced": 0.14263429100174108,
+      "full_corresponding_total_n_eval": 64,
+      "full_corresponding_total_runtime_sec": 0.05046505199788953,
+      "scan_eval_budget": 256,
+      "docking_eval_budget": 64,
+      "total_eval_budget_pipeline": 320
+    }
+  },
+  {
+    "case_id": "case_04_spread_chain",
+    "inputs": {
+      "receptor_path": "validation_geom_multi/inputs/case_04_spread_chain_receptor.pdb",
+      "peptide_path": "validation_geom_multi/inputs/case_04_spread_chain_peptide.pdb"
+    },
+    "legacy": {
+      "selected_pockets": [],
+      "rejected_pockets": [
+        {
+          "pocket_id": "auto_grid_2",
+          "reason": "feasible_fraction<=0.0"
+        },
+        {
+          "pocket_id": "auto_grid_0",
+          "reason": "feasible_fraction<=0.0"
+        }
+      ],
+      "fallback_to_full": true,
+      "n_pockets_used": 0,
+      "best_pocket_id": "global",
+      "best_over_pockets_cheap": 1412.5,
+      "total_n_eval_reduced": 64,
+      "total_runtime_sec_reduced": 0.16572092799833626,
+      "full_corresponding_total_n_eval": 64,
+      "full_corresponding_total_runtime_sec": 0.04251246199783054,
+      "scan_eval_budget": 192,
+      "docking_eval_budget": 64,
+      "total_eval_budget_pipeline": 256
+    },
+    "geom_kdtree": {
+      "selected_pockets": [
+        "auto_grid_2",
+        "auto_grid_1"
+      ],
+      "rejected_pockets": [],
+      "fallback_to_full": false,
+      "n_pockets_used": 2,
+      "best_pocket_id": "auto_grid_1",
+      "best_over_pockets_cheap": 639.0,
+      "total_n_eval_reduced": 64,
+      "total_runtime_sec_reduced": 0.10649462700530421,
+      "full_corresponding_total_n_eval": 64,
+      "full_corresponding_total_runtime_sec": 0.04251246199783054,
+      "scan_eval_budget": 192,
+      "docking_eval_budget": 64,
+      "total_eval_budget_pipeline": 256
+    }
+  },
+  {
+    "case_id": "case_05_compact_dense",
+    "inputs": {
+      "receptor_path": "validation_geom_multi/inputs/case_05_compact_dense_receptor.pdb",
+      "peptide_path": "validation_geom_multi/inputs/case_05_compact_dense_peptide.pdb"
+    },
+    "legacy": {
+      "selected_pockets": [],
+      "rejected_pockets": [
+        {
+          "pocket_id": "auto_grid_0",
+          "reason": "feasible_fraction<=0.0"
+        },
+        {
+          "pocket_id": "auto_grid_2",
+          "reason": "feasible_fraction<=0.0"
+        }
+      ],
+      "fallback_to_full": true,
+      "n_pockets_used": 0,
+      "best_pocket_id": "global",
+      "best_over_pockets_cheap": 1644.5,
+      "total_n_eval_reduced": 64,
+      "total_runtime_sec_reduced": 0.11830973999894923,
+      "full_corresponding_total_n_eval": 64,
+      "full_corresponding_total_runtime_sec": 0.043159657001524465,
+      "scan_eval_budget": 128,
+      "docking_eval_budget": 64,
+      "total_eval_budget_pipeline": 192
+    },
+    "geom_kdtree": {
+      "selected_pockets": [
+        "auto_grid_0",
+        "auto_grid_2"
+      ],
+      "rejected_pockets": [],
+      "fallback_to_full": false,
+      "n_pockets_used": 2,
+      "best_pocket_id": "auto_grid_0",
+      "best_over_pockets_cheap": 1484.0,
+      "total_n_eval_reduced": 64,
+      "total_runtime_sec_reduced": 0.08234095599254942,
+      "full_corresponding_total_n_eval": 64,
+      "full_corresponding_total_runtime_sec": 0.043159657001524465,
+      "scan_eval_budget": 128,
+      "docking_eval_budget": 64,
+      "total_eval_budget_pipeline": 192
+    }
+  }
+]

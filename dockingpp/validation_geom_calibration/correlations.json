@@ -1,0 +1,46 @@
+{
+  "by_case": {
+    "case_01_dual_cluster_near": {
+      "corr_pocket_scan_score_vs_best_final": 0.30829240317533296,
+      "corr_feasible_fraction_vs_best_final": 0.46254016564831807,
+      "corr_severe_clash_fraction_vs_best_final": -0.46254016564831807,
+      "corr_mean_contacts_vs_best_final": 0.28489394576125643,
+      "corr_best_geom_energy_vs_best_final": null
+    },
+    "case_02_dual_cluster_mid": {
+      "corr_pocket_scan_score_vs_best_final": -1.0,
+      "corr_feasible_fraction_vs_best_final": -1.0,
+      "corr_severe_clash_fraction_vs_best_final": 1.0,
+      "corr_mean_contacts_vs_best_final": -1.0,
+      "corr_best_geom_energy_vs_best_final": null
+    },
+    "case_03_tri_cluster": {
+      "corr_pocket_scan_score_vs_best_final": -0.9246384724075682,
+      "corr_feasible_fraction_vs_best_final": -0.7208173722537202,
+      "corr_severe_clash_fraction_vs_best_final": 0.7208173722537202,
+      "corr_mean_contacts_vs_best_final": -0.9306152540740005,
+      "corr_best_geom_energy_vs_best_final": -0.5538814918351217
+    },
+    "case_04_spread_chain": {
+      "corr_pocket_scan_score_vs_best_final": -0.9989590143548782,
+      "corr_feasible_fraction_vs_best_final": -0.9984779004607657,
+      "corr_severe_clash_fraction_vs_best_final": 0.9984779004607657,
+      "corr_mean_contacts_vs_best_final": -0.9991283733559879,
+      "corr_best_geom_energy_vs_best_final": null
+    },
+    "case_05_compact_dense": {
+      "corr_pocket_scan_score_vs_best_final": -1.0,
+      "corr_feasible_fraction_vs_best_final": -1.0,
+      "corr_severe_clash_fraction_vs_best_final": 1.0,
+      "corr_mean_contacts_vs_best_final": -1.0,
+      "corr_best_geom_energy_vs_best_final": null
+    }
+  },
+  "global": {
+    "corr_pocket_scan_score_vs_best_final": -0.6266005266877358,
+    "corr_feasible_fraction_vs_best_final": -0.791306633921319,
+    "corr_severe_clash_fraction_vs_best_final": 0.7913066339213192,
+    "corr_mean_contacts_vs_best_final": -0.5802611796940753,
+    "corr_best_geom_energy_vs_best_final": -0.09280996195924557
+  }
+}
