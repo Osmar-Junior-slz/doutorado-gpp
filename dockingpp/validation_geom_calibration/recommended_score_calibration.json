@@ -1,0 +1,12 @@
+{
+  "alpha": 0.0,
+  "beta": 0.0,
+  "gamma": 0.0,
+  "delta": 0.1,
+  "raw_standardized_coeffs": {
+    "feasible_fraction": -0.3622899731259292,
+    "mean_contacts": -0.1011745823672846,
+    "neg_severe_clash_fraction": -0.36228997312592903,
+    "neg_best_geom_energy": -0.0008096588934610773
+  }
+}

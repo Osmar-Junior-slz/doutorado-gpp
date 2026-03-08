@@ -17,6 +17,7 @@ from dockingpp.data.structs import Pocket, RunResult
 from dockingpp.pipeline.logging import AuditTracer, RunLogger
 from dockingpp.pipeline.scan import (
     build_receptor_kdtree,
+    scan_pocket_feasibility_geom_kdtree,
     scan_pocket_feasibility,
     select_pockets_from_scan,
 )
@@ -82,13 +83,23 @@ def _dummy_inputs() -> tuple[Any, Any, list[Pocket]]:
         ],
         dtype=float,
     )
+    peptide_coords = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.5, 0.0, 0.0],
+            [0.0, 0.5, 0.0],
+            [0.0, 0.0, 0.5],
+        ],
+        dtype=float,
+    )
     pockets = [
         Pocket(id="dummy-0", center=np.array([0.0, 0.0, 0.0]), radius=5.0, coords=receptor_coords),
         Pocket(id="dummy-1", center=np.array([10.0, 0.0, 0.0]), radius=5.0, coords=receptor_coords),
         Pocket(id="dummy-2", center=np.array([0.0, 10.0, 0.0]), radius=5.0, coords=receptor_coords),
     ]
     receptor = {"dummy": True, "coords": receptor_coords}
-    return receptor, {"dummy": True}, pockets
+    peptide = {"dummy": True, "coords": peptide_coords}
+    return receptor, peptide, pockets
 
 
 def _extract_coords(receptor: Any) -> np.ndarray:
@@ -209,7 +220,7 @@ def _execute_single_run(
     pocketing_time: float,
     scan_time: float,
     scan_params: dict[str, Any],
-    scan_results: dict[str, dict[str, float]],
+    scan_results: dict[str, dict[str, Any]],
     selected_pocket_ids: list[str],
     tracer: AuditTracer | None = None,
     pocket_id: str | None = None,
@@ -385,11 +396,17 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
 
         scan_cfg = _cfg_value(cfg, "scan", None)
         scan_enabled = bool(_cfg_value(scan_cfg, "enabled", False)) and search_space_mode == "reduced"
-        scan_results: dict[str, dict[str, float]] = {}
+        selector_mode = str(_cfg_value(scan_cfg, "selector_mode", "legacy") or "legacy").strip().lower()
+        if selector_mode not in {"legacy", "geom_kdtree"}:
+            selector_mode = "legacy"
+        scan_results: dict[str, dict[str, Any]] = {}
         scan_params = {
             "enabled": scan_enabled,
+            "selector_mode": selector_mode,
             "max_clash_ratio": _cfg_value(scan_cfg, "max_clash_ratio", None),
             "select_top_k": _cfg_value(scan_cfg, "select_top_k", None),
+            "reject_if_feasible_fraction_leq": _cfg_value(scan_cfg, "reject_if_feasible_fraction_leq", 0.0),
+            "reject_if_severe_clash_fraction_geq": _cfg_value(scan_cfg, "reject_if_severe_clash_fraction_geq", 0.95),
         }
         scan_start = time.perf_counter()
         if scan_enabled and pockets:
@@ -398,8 +415,38 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
             receptor_kdtree = build_receptor_kdtree(receptor_coords)
             rng = np.random.default_rng(cfg.seed + int(_cfg_value(scan_cfg, "seed_offset", 0) or 0))
             for pocket in pockets:
-                scan_results[str(pocket.id)] = scan_pocket_feasibility(receptor_kdtree, peptide_coords, pocket, scan_cfg, rng)
-            pockets = select_pockets_from_scan(pockets, scan_results, _cfg_value(scan_cfg, "select_top_k", None))
+                if selector_mode == "geom_kdtree":
+                    scan_results[str(pocket.id)] = scan_pocket_feasibility_geom_kdtree(
+                        receptor_kdtree,
+                        receptor_coords,
+                        peptide_coords,
+                        pocket,
+                        scan_cfg,
+                        rng,
+                    )
+                else:
+                    scan_results[str(pocket.id)] = scan_pocket_feasibility(receptor_kdtree, peptide_coords, pocket, scan_cfg, rng)
+            pockets = select_pockets_from_scan(
+                pockets,
+                scan_results,
+                _cfg_value(scan_cfg, "select_top_k", None),
+                selector_mode=selector_mode,
+            )
+            ranking_payload = [
+                {
+                    "pocket_id": str(p.id),
+                    "rank": int(idx),
+                    "score": float(scan_results.get(str(p.id), {}).get("pocket_scan_score" if selector_mode == "geom_kdtree" else "scan_score", float("-inf"))),
+                }
+                for idx, p in enumerate(pockets)
+            ]
+            tracer.event(
+                stage="scan",
+                event_type="scan_selection_ranked",
+                payload={"selector_mode": selector_mode, "ranking": ranking_payload},
+                level="TRACE",
+                decision=True,
+            )
         scan_time = time.perf_counter() - scan_start
 
         if search_space_mode == "full":
@@ -450,21 +497,57 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
             })
             return result
 
-        max_clash_ratio = float(_cfg_value(scan_cfg, "max_clash_ratio", 0.02) or 0.02)
+        max_clash_ratio = float(_cfg_value(scan_cfg, "max_clash_ratio", 0.02))
+        reject_if_feasible_fraction_leq = float(_cfg_value(scan_cfg, "reject_if_feasible_fraction_leq", 0.0))
+        reject_if_severe_clash_fraction_geq = float(_cfg_value(scan_cfg, "reject_if_severe_clash_fraction_geq", 0.95))
         feasible_pockets: list[tuple[int, Pocket]] = []
         rejected: list[dict[str, Any]] = []
         for idx, pocket in enumerate(pockets):
             metrics = scan_results.get(str(pocket.id), {})
             feasible_fraction = float(metrics.get("feasible_fraction", 1.0))
-            clash_ratio_best = float(metrics.get("clash_ratio_best", 0.0))
-            if feasible_fraction <= 0.0:
-                rejected.append({"pocket_id": pocket.id, "reason": "feasible_fraction<=0.0"})
-                tracer.event(stage="pocket_filter", event_type="pocket_rejected", payload={"reason": "feasible_fraction<=0.0", "feasible_fraction": feasible_fraction}, pocket_id=str(pocket.id), level="TRACE", decision=True)
-                continue
-            if clash_ratio_best > max_clash_ratio:
-                rejected.append({"pocket_id": pocket.id, "reason": "clash_ratio_best>max_clash_ratio"})
-                tracer.event(stage="pocket_filter", event_type="pocket_rejected", payload={"reason": "clash_ratio_best>max_clash_ratio", "clash_ratio_best": clash_ratio_best, "max_clash_ratio": max_clash_ratio}, pocket_id=str(pocket.id), level="TRACE", decision=True)
-                continue
+            if selector_mode == "geom_kdtree":
+                severe_clash_fraction = float(metrics.get("severe_clash_fraction", 0.0))
+                if feasible_fraction <= reject_if_feasible_fraction_leq and severe_clash_fraction >= reject_if_severe_clash_fraction_geq:
+                    reason = "geom_kdtree_clearly_inviable"
+                    rejected.append({"pocket_id": pocket.id, "reason": reason})
+                    tracer.event(
+                        stage="pocket_filter",
+                        event_type="pocket_rejected",
+                        payload={
+                            "selector_mode": selector_mode,
+                            "reason": reason,
+                            "feasible_fraction": feasible_fraction,
+                            "severe_clash_fraction": severe_clash_fraction,
+                            "reject_if_feasible_fraction_leq": reject_if_feasible_fraction_leq,
+                            "reject_if_severe_clash_fraction_geq": reject_if_severe_clash_fraction_geq,
+                            "pocket_scan_score": float(metrics.get("pocket_scan_score", float("-inf"))),
+                        },
+                        pocket_id=str(pocket.id),
+                        level="TRACE",
+                        decision=True,
+                    )
+                    continue
+            else:
+                clash_ratio_best = float(metrics.get("clash_ratio_best", 0.0))
+                if feasible_fraction <= 0.0:
+                    rejected.append({"pocket_id": pocket.id, "reason": "feasible_fraction<=0.0"})
+                    tracer.event(stage="pocket_filter", event_type="pocket_rejected", payload={"selector_mode": selector_mode, "reason": "feasible_fraction<=0.0", "feasible_fraction": feasible_fraction}, pocket_id=str(pocket.id), level="TRACE", decision=True)
+                    continue
+                if clash_ratio_best > max_clash_ratio:
+                    rejected.append({"pocket_id": pocket.id, "reason": "clash_ratio_best>max_clash_ratio"})
+                    tracer.event(stage="pocket_filter", event_type="pocket_rejected", payload={"selector_mode": selector_mode, "reason": "clash_ratio_best>max_clash_ratio", "clash_ratio_best": clash_ratio_best, "max_clash_ratio": max_clash_ratio}, pocket_id=str(pocket.id), level="TRACE", decision=True)
+                    continue
+            tracer.event(
+                stage="pocket_filter",
+                event_type="pocket_metrics_evaluated",
+                payload={
+                    "selector_mode": selector_mode,
+                    "metrics": metrics,
+                    "accepted": True,
+                },
+                pocket_id=str(pocket.id),
+                level="TRACE",
+            )
             feasible_pockets.append((idx, pocket))
 
         if not feasible_pockets:
@@ -625,6 +708,8 @@ def run_pipeline(cfg: Config, receptor_path: str, peptide_path: str, out_dir: st
                     "best_pose_id": result.best_pose.meta.get("pose_id") or result.best_pose.meta.get("id"),
                     "feasible_fraction": float(metrics.get("feasible_fraction", 0.0)),
                     "clash_ratio_best": float(metrics.get("clash_ratio_best", 0.0)),
+                    "severe_clash_fraction": float(metrics.get("severe_clash_fraction", 0.0)),
+                    "pocket_scan_score": float(metrics.get("pocket_scan_score", metrics.get("scan_score", 0.0))),
                     "outdir": pocket_out_dir,
                     "eval_budget_assigned": assigned_budget,
                 }
@@ -783,7 +868,7 @@ def _write_summary(
     records: list[dict[str, Any]],
     pockets: list[Pocket],
     scan_params: dict[str, Any],
-    scan_by_pocket: dict[str, dict[str, float]],
+    scan_by_pocket: dict[str, dict[str, Any]],
     selected_pocket_ids: list[str],
 ) -> None:
     expensive_ran = 0.0

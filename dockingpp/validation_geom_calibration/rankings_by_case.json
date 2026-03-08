@@ -1,0 +1,60 @@
+{
+  "case_01_dual_cluster_near": {
+    "by_pocket_scan_score": [
+      "auto_grid_1",
+      "auto_grid_0",
+      "auto_grid_2"
+    ],
+    "by_best_score_cheap_final": [
+      "auto_grid_0",
+      "auto_grid_1",
+      "auto_grid_2"
+    ]
+  },
+  "case_02_dual_cluster_mid": {
+    "by_pocket_scan_score": [
+      "auto_grid_2",
+      "auto_grid_0"
+    ],
+    "by_best_score_cheap_final": [
+      "auto_grid_0",
+      "auto_grid_2"
+    ]
+  },
+  "case_03_tri_cluster": {
+    "by_pocket_scan_score": [
+      "auto_grid_3",
+      "auto_grid_1",
+      "auto_grid_0",
+      "auto_grid_2"
+    ],
+    "by_best_score_cheap_final": [
+      "auto_grid_0",
+      "auto_grid_1",
+      "auto_grid_2",
+      "auto_grid_3"
+    ]
+  },
+  "case_04_spread_chain": {
+    "by_pocket_scan_score": [
+      "auto_grid_2",
+      "auto_grid_1",
+      "auto_grid_0"
+    ],
+    "by_best_score_cheap_final": [
+      "auto_grid_0",
+      "auto_grid_1",
+      "auto_grid_2"
+    ]
+  },
+  "case_05_compact_dense": {
+    "by_pocket_scan_score": [
+      "auto_grid_2",
+      "auto_grid_0"
+    ],
+    "by_best_score_cheap_final": [
+      "auto_grid_0",
+      "auto_grid_2"
+    ]
+  }
+}

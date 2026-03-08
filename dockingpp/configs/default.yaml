@@ -44,6 +44,7 @@ expensive:
 
 scan:
   enabled: true
+  selector_mode: "legacy"
   generations: 30
   samples_per_pocket: 64
   max_pockets_scan: null
@@ -51,4 +52,17 @@ scan:
   clash_cutoff: 2.0
   contact_cutoff: 6.0
   max_clash_ratio: 0.02
+  translation_sigma: 2.0
+  rotation_max_deg: 30.0
+  severe_clash_threshold: 1.0
+  moderate_clash_threshold: 1.1
+  contact_min: 1.5
+  contact_max: 3.0
+  exposure_margin: 2.0
+  reject_if_feasible_fraction_leq: 0.0
+  reject_if_severe_clash_fraction_geq: 0.95
+  score_alpha: 1.0
+  score_beta: 1.0
+  score_gamma: 1.0
+  score_delta: 1.0
   seed_offset: 1337
