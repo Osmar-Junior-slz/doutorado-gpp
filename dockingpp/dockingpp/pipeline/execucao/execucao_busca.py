@@ -4,8 +4,18 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, Callable
+
+from dockingpp.pipeline.execucao.agregacao_resultados import AgregadorResultadosPipeline
+from dockingpp.pipeline.execucao.auditoria_execucao import AuditoriaExecucaoPipeline
+from dockingpp.pipeline.logging import RunLogger
+from dockingpp.priors.pocket import PriorNetPocket
+from dockingpp.priors.pose import PriorNetPose
+from dockingpp.scoring.cheap import score_pose_cheap
+from dockingpp.scoring.expensive import score_pose_expensive
+from dockingpp.search.abc_ga_vgos import ABCGAVGOSSearch
 
 
 @dataclass(frozen=True)
@@ -22,6 +32,150 @@ class ContextoExecucaoBusca:
     scan_time: float
     feasible_pockets: list[tuple[int, Any]]
     rejected: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class ContextoExecucaoUnica:
+    """Dados auxiliares para persistência e auditoria de uma execução única."""
+
+    run_id: str
+    receptor_path: str
+    peptide_path: str
+    search_space_mode: str
+    total_pockets: int
+    selected_pockets: int
+    pocketing_time: float
+    scan_time: float
+    scan_params: dict[str, Any]
+    scan_results: dict[str, dict[str, Any]]
+    selected_pocket_ids: list[str]
+    tracer: Any | None = None
+    pocket_id: str | None = None
+
+
+class ExecutorExecucaoUnicaPipeline:
+    """Executa uma busca isolada mantendo o contrato histórico do pipeline."""
+
+    def executar(
+        self,
+        *,
+        cfg: Any,
+        receptor: Any,
+        peptide: Any,
+        pockets: list[Any],
+        out_dir: str,
+        contexto: ContextoExecucaoUnica,
+    ) -> tuple[Any, dict[str, Any], RunLogger]:
+        """Executa busca única e persiste os artefatos padrão sem alterar semântica."""
+
+        os.makedirs(out_dir, exist_ok=True)
+        logger = RunLogger(out_dir=out_dir, live_write=True)
+        cfg.expensive_logger = logger
+        search = ABCGAVGOSSearch(cfg)
+        prior_pocket = PriorNetPocket()
+        prior_pose = PriorNetPose()
+
+        pockets_para_busca = pockets
+        # Regra histórica: no modo full, `max_pockets_used` limita o conjunto
+        # entregue ao motor de busca sem alterar a seleção upstream.
+        if contexto.search_space_mode == "full":
+            limite_pockets = int(getattr(cfg, "max_pockets_used", 0) or 0)
+            if limite_pockets > 0:
+                pockets_para_busca = pockets[:limite_pockets]
+
+        auditoria = AuditoriaExecucaoPipeline()
+        auditoria.registrar_inicio_busca(tracer=contexto.tracer, cfg=cfg, pocket_id=contexto.pocket_id)
+        start_search = time.perf_counter()
+        result = search.search(
+            receptor=receptor,
+            peptide=peptide,
+            pockets=pockets_para_busca,
+            cfg=cfg,
+            score_cheap_fn=score_pose_cheap,
+            score_expensive_fn=score_pose_expensive,
+            prior_pocket=prior_pocket,
+            prior_pose=prior_pose,
+            logger=logger,
+        )
+        end_search = time.perf_counter()
+        auditoria.registrar_fim_busca(
+            tracer=contexto.tracer,
+            pocket_id=contexto.pocket_id,
+            runtime_sec=end_search - start_search,
+        )
+
+        config_resolved_subset = {
+            "seed": cfg.seed,
+            "generations": cfg.generations,
+            "pop_size": cfg.pop_size,
+            "topk": cfg.topk,
+            "search_space_mode": contexto.search_space_mode,
+            "full_search": bool(getattr(cfg, "full_search", True)),
+            "top_pockets": int(getattr(cfg, "top_pockets", 0) or 0),
+            "max_pockets_used": int(getattr(cfg, "max_pockets_used", 0) or 0),
+            "expensive_every": int(getattr(cfg, "expensive_every", 0) or 0),
+            "expensive_topk": getattr(cfg, "expensive_topk", None),
+            "debug_log_enabled": bool(getattr(cfg, "debug_log_enabled", False)),
+            "debug_log_path": getattr(cfg, "debug_log_path", None),
+            "debug_log_level": getattr(cfg, "debug_log_level", None),
+            "scan": contexto.scan_params,
+            "budget_policy": getattr(cfg, "budget_policy", "split"),
+        }
+        best_pose_id = result.best_pose.meta.get("pose_id") or result.best_pose.meta.get("id")
+        runtime_sec = contexto.pocketing_time + contexto.scan_time + (end_search - start_search)
+
+        agregador = AgregadorResultadosPipeline()
+        payload = agregador.construir_payload_execucao(
+            run_id=contexto.run_id,
+            mode="single",
+            search_space_mode=contexto.search_space_mode,
+            runtime_sec=runtime_sec,
+            total_pockets=contexto.total_pockets,
+            selected_pockets=len(pockets_para_busca),
+            best_score_cheap=result.best_pose.score_cheap,
+            best_score_expensive=result.best_pose.score_expensive,
+            best_pose_id=best_pose_id,
+            config_resolved_subset=config_resolved_subset,
+            pocketing_time=contexto.pocketing_time,
+            scan_time=contexto.scan_time,
+            search_time=end_search - start_search,
+        )
+        result_path = agregador.persistir_payload_resultado(out_dir=out_dir, payload=payload)
+        auditoria.registrar_artefato_escrito(tracer=contexto.tracer, caminho=result_path)
+
+        logger.flush(out_dir)
+        logger.flush_timeseries(out_dir, mode=contexto.search_space_mode)
+        summary_path = agregador.escrever_summary_execucao(
+            out_dir=out_dir,
+            run_id=contexto.run_id,
+            mode="single",
+            receptor_path=contexto.receptor_path,
+            peptide_path=contexto.peptide_path,
+            search_space_mode=contexto.search_space_mode,
+            runtime_sec=runtime_sec,
+            search_time_sec=end_search - start_search,
+            pocketing_sec=contexto.pocketing_time,
+            scan_sec=contexto.scan_time,
+            total_pockets=contexto.total_pockets,
+            selected_pockets=contexto.selected_pockets,
+            best_score_cheap=result.best_pose.score_cheap,
+            best_score_expensive=result.best_pose.score_expensive,
+            best_pose_pocket_id=result.best_pose.meta.get("pocket_id"),
+            config_resolved_subset=config_resolved_subset,
+            records=logger.records,
+            pockets=pockets,
+            scan_params=contexto.scan_params,
+            scan_by_pocket=contexto.scan_results,
+            selected_pocket_ids=[str(p.id) for p in pockets_para_busca],
+        )
+        auditoria.registrar_artefato_escrito(tracer=contexto.tracer, caminho=summary_path)
+        auditoria.registrar_execucao_finalizada(
+            tracer=contexto.tracer,
+            pocket_id=contexto.pocket_id,
+            best_score_cheap=result.best_pose.score_cheap,
+            best_score_expensive=result.best_pose.score_expensive,
+        )
+        return result, payload, logger
 
 
 class ExecutorBuscaPipeline:
