@@ -41,13 +41,13 @@ def _to_row(summary: dict[str, Any]) -> dict[str, Any]:
         "complex_id": _first_non_null(summary.get("complex_id"), summary.get("input_id")),
         "seed": _first_non_null(summary.get("seed"), summary.get("config_resolved_subset", {}).get("seed")),
         "search_space_mode": summary.get("search_space_mode"),
-        "runtime_sec": summary.get("runtime_sec"),
-        "n_eval_total": summary.get("n_eval_total"),
+        "runtime_sec": _first_non_null(summary.get("runtime_sec"), summary.get("total_runtime_sec")),
+        "n_eval_total": _first_non_null(summary.get("n_eval_total"), summary.get("total_n_eval")),
         "n_pockets_total": _first_non_null(summary.get("n_pockets_total"), summary.get("n_pockets_detected")),
         "n_pockets_used": summary.get("n_pockets_used"),
         "reduction_ratio": summary.get("reduction_ratio"),
-        "best_score_cheap": summary.get("best_score_cheap"),
-        "best_score_expensive": summary.get("best_score_expensive"),
+        "best_score_cheap": _first_non_null(summary.get("best_score_cheap"), summary.get("best_over_pockets_cheap")),
+        "best_score_expensive": _first_non_null(summary.get("best_score_expensive"), summary.get("best_over_pockets_expensive")),
     }
 
 

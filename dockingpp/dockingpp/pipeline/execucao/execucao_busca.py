@@ -24,15 +24,19 @@ class ContextoExecucaoBusca:
 
     search_space_mode: str
     modo_legado_pockets: bool
+    candidate_pockets: list[Any]
+    selected_pockets: list[Any]
+    # Compatibilidade: `pockets` permanece como alias de `selected_pockets`.
     pockets: list[Any]
     total_pockets: int
     scan_results: dict[str, dict[str, Any]]
     scan_params: dict[str, Any]
     pocketing_time: float
     scan_time: float
+    accepted_pockets: list[tuple[int, Any]]
+    # Compatibilidade: `feasible_pockets` permanece como alias dos aceitos.
     feasible_pockets: list[tuple[int, Any]]
     rejected: list[dict[str, Any]]
-
 
 @dataclass(frozen=True)
 class ContextoExecucaoUnica:
@@ -51,6 +55,7 @@ class ContextoExecucaoUnica:
     selected_pocket_ids: list[str]
     tracer: Any | None = None
     pocket_id: str | None = None
+    include_global_overhead: bool = True
 
 
 class ExecutorExecucaoUnicaPipeline:
@@ -122,7 +127,10 @@ class ExecutorExecucaoUnicaPipeline:
             "budget_policy": getattr(cfg, "budget_policy", "split"),
         }
         best_pose_id = result.best_pose.meta.get("pose_id") or result.best_pose.meta.get("id")
-        runtime_sec = contexto.pocketing_time + contexto.scan_time + (end_search - start_search)
+        search_time_sec = end_search - start_search
+        pocketing_sec = contexto.pocketing_time if contexto.include_global_overhead else 0.0
+        scan_sec = contexto.scan_time if contexto.include_global_overhead else 0.0
+        runtime_sec = pocketing_sec + scan_sec + search_time_sec
 
         agregador = AgregadorResultadosPipeline()
         payload = agregador.construir_payload_execucao(
@@ -136,9 +144,9 @@ class ExecutorExecucaoUnicaPipeline:
             best_score_expensive=result.best_pose.score_expensive,
             best_pose_id=best_pose_id,
             config_resolved_subset=config_resolved_subset,
-            pocketing_time=contexto.pocketing_time,
-            scan_time=contexto.scan_time,
-            search_time=end_search - start_search,
+            pocketing_time=pocketing_sec,
+            scan_time=scan_sec,
+            search_time=search_time_sec,
         )
         result_path = agregador.persistir_payload_resultado(out_dir=out_dir, payload=payload)
         auditoria.registrar_artefato_escrito(tracer=contexto.tracer, caminho=result_path)
@@ -153,9 +161,9 @@ class ExecutorExecucaoUnicaPipeline:
             peptide_path=contexto.peptide_path,
             search_space_mode=contexto.search_space_mode,
             runtime_sec=runtime_sec,
-            search_time_sec=end_search - start_search,
-            pocketing_sec=contexto.pocketing_time,
-            scan_sec=contexto.scan_time,
+            search_time_sec=search_time_sec,
+            pocketing_sec=pocketing_sec,
+            scan_sec=scan_sec,
             total_pockets=contexto.total_pockets,
             selected_pockets=contexto.selected_pockets,
             best_score_cheap=result.best_pose.score_cheap,
@@ -163,7 +171,7 @@ class ExecutorExecucaoUnicaPipeline:
             best_pose_pocket_id=result.best_pose.meta.get("pocket_id"),
             config_resolved_subset=config_resolved_subset,
             records=logger.records,
-            pockets=pockets,
+            pockets=pockets_para_busca,
             scan_params=contexto.scan_params,
             scan_by_pocket=contexto.scan_results,
             selected_pocket_ids=[str(p.id) for p in pockets_para_busca],
@@ -213,13 +221,14 @@ class ExecutorBuscaPipeline:
 
         search_space_mode = contexto.search_space_mode
         modo_legado_pockets = contexto.modo_legado_pockets
-        pockets = contexto.pockets
+        selected_pockets = contexto.selected_pockets or contexto.pockets
         total_pockets = contexto.total_pockets
         scan_results = contexto.scan_results
         scan_params = contexto.scan_params
         pocketing_time = contexto.pocketing_time
         scan_time = contexto.scan_time
-        feasible_pockets = contexto.feasible_pockets
+        accepted_pockets = contexto.accepted_pockets or contexto.feasible_pockets
+        feasible_pockets = contexto.feasible_pockets or accepted_pockets
         rejected = contexto.rejected
 
         if search_space_mode == "full":
@@ -227,19 +236,19 @@ class ExecutorBuscaPipeline:
                 cfg=cfg,
                 receptor=receptor,
                 peptide=peptide,
-                pockets=pockets,
+                pockets=selected_pockets,
                 out_dir=out_dir,
                 run_id=run_id,
                 receptor_path=receptor_path,
                 peptide_path=peptide_path,
                 search_space_mode="full",
                 total_pockets=total_pockets,
-                selected_pockets=len(pockets),
+                selected_pockets=len(selected_pockets),
                 pocketing_time=pocketing_time,
                 scan_time=scan_time,
                 scan_params=scan_params,
                 scan_results=scan_results,
-                selected_pocket_ids=[str(p.id) for p in pockets],
+                selected_pocket_ids=[str(p.id) for p in selected_pockets],
                 tracer=tracer,
                 pocket_id="global",
             )
@@ -260,14 +269,14 @@ class ExecutorBuscaPipeline:
                     "best_score_expensive": result.best_pose.score_expensive,
                     "best_pocket_id": result.best_pose.meta.get("pocket_id"),
                     "n_pockets_total": total_pockets,
-                    "n_pockets_used": len(pockets),
+                    "n_pockets_used": len(selected_pockets),
                     "total_eval_budget_requested": int(cfg.generations) * int(cfg.pop_size),
                     "total_eval_budget_assigned": int(cfg.generations) * int(cfg.pop_size),
                     "budget_delta": 0,
                     "budget_rounding_applied": False,
                     "warnings_count": tracer.warnings_count,
                     "errors_count": tracer.errors_count,
-                    "selected_pockets": [str(p.id) for p in pockets],
+                    "selected_pockets": [str(p.id) for p in selected_pockets],
                     "rejected_pockets": [],
                 },
             )
@@ -278,19 +287,19 @@ class ExecutorBuscaPipeline:
                 cfg=cfg,
                 receptor=receptor,
                 peptide=peptide,
-                pockets=pockets,
+                pockets=selected_pockets,
                 out_dir=out_dir,
                 run_id=run_id,
                 receptor_path=receptor_path,
                 peptide_path=peptide_path,
                 search_space_mode="reduced",
                 total_pockets=total_pockets,
-                selected_pockets=len(pockets),
+                selected_pockets=len(selected_pockets),
                 pocketing_time=pocketing_time,
                 scan_time=scan_time,
                 scan_params=scan_params,
                 scan_results=scan_results,
-                selected_pocket_ids=[str(p.id) for p in pockets],
+                selected_pocket_ids=[str(p.id) for p in selected_pockets],
                 tracer=tracer,
                 pocket_id="legacy_pockets",
             )
@@ -311,14 +320,14 @@ class ExecutorBuscaPipeline:
                     "best_score_expensive": result.best_pose.score_expensive,
                     "best_pocket_id": result.best_pose.meta.get("pocket_id"),
                     "n_pockets_total": total_pockets,
-                    "n_pockets_used": len(pockets),
+                    "n_pockets_used": len(selected_pockets),
                     "total_eval_budget_requested": int(cfg.generations) * int(cfg.pop_size),
                     "total_eval_budget_assigned": int(cfg.generations) * int(cfg.pop_size),
                     "budget_delta": 0,
                     "budget_rounding_applied": False,
                     "warnings_count": tracer.warnings_count,
                     "errors_count": tracer.errors_count,
-                    "selected_pockets": [str(p.id) for p in pockets],
+                    "selected_pockets": [str(p.id) for p in selected_pockets],
                     "rejected_pockets": [],
                 },
             )
@@ -366,6 +375,9 @@ class ExecutorBuscaPipeline:
                 "fallback_reason": "no_feasible_pocket",
                 "executed_mode": "full",
                 "rejected_pockets": rejected,
+                "pocketing_time_sec": float(pocketing_time),
+                "scan_time_sec": float(scan_time),
+                "search_time_total_sec": float(full_payload.get("timing", {}).get("search_s", 0.0)),
                 "total_runtime_sec": float(full_payload.get("runtime_sec", 0.0)),
                 "total_n_eval": int(sum(float(r.get("value", 0.0)) for r in full_logger.records if r.get("name") == "n_eval")),
                 "total_eval_budget_requested": requested_budget,
@@ -374,6 +386,7 @@ class ExecutorBuscaPipeline:
                 "budget_rounding_applied": bool(assigned_budget != requested_budget),
                 "n_pockets_total": total_pockets,
                 "n_pockets_used": 0,
+                "selected_pre_filter_pockets": [str(p.id) for p in selected_pockets],
                 "selected_pockets": [],
                 "best_pocket_id": "global",
                 "best_over_pockets_cheap": result.best_pose.score_cheap,
@@ -403,6 +416,7 @@ class ExecutorBuscaPipeline:
                     "best_pocket_id": "global",
                     "n_pockets_total": total_pockets,
                     "n_pockets_used": 0,
+                    "selected_pre_filter_pockets": [str(p.id) for p in selected_pockets],
                     "total_eval_budget_requested": requested_budget,
                     "total_eval_budget_assigned": assigned_budget,
                     "budget_delta": int(assigned_budget - requested_budget),
@@ -422,6 +436,7 @@ class ExecutorBuscaPipeline:
         tracer.event(stage="budget", event_type="budget_split", payload={"total_eval_budget_requested": int(cfg.generations) * int(cfg.pop_size), "n_pockets": len(feasible_pockets), "allocations": [{"pocket_id": str(p.id), "generations": int(b[0]), "pop_size": int(b[1])} for (_, p), b in zip(feasible_pockets, budgets)]}, level="TRACE", decision=True)
 
         per_pocket_results = []
+        search_time_total_sec = 0.0
         total_runtime_sec = 0.0
         total_n_eval = 0
         total_eval_budget_requested = int(cfg.generations) * int(cfg.pop_size)
@@ -460,10 +475,12 @@ class ExecutorBuscaPipeline:
                 selected_pocket_ids=[str(pocket.id)],
                 tracer=tracer,
                 pocket_id=str(pocket.id),
+                include_global_overhead=False,
             )
             runtime = float(payload.get("runtime_sec", 0.0))
+            search_time_sec = float(payload.get("timing", {}).get("search_s", runtime))
             n_eval = int(sum(float(r.get("value", 0.0)) for r in logger.records if r.get("name") == "n_eval"))
-            total_runtime_sec += runtime
+            search_time_total_sec += search_time_sec
             total_n_eval += n_eval
             score_cheap = result.best_pose.score_cheap
             score_expensive = result.best_pose.score_expensive
@@ -480,6 +497,7 @@ class ExecutorBuscaPipeline:
                     "best_score_cheap": score_cheap,
                     "best_score_expensive": score_expensive,
                     "runtime_sec": runtime,
+                    "search_time_sec": search_time_sec,
                     "n_eval_total": n_eval,
                     "alloc_generations": int(pocket_cfg.generations),
                     "alloc_pop_size": int(pocket_cfg.pop_size),
@@ -489,6 +507,7 @@ class ExecutorBuscaPipeline:
 
         budget_delta = int(total_eval_budget_assigned - total_eval_budget_requested)
         budget_rounding_applied = budget_delta != 0
+        total_runtime_sec = float(pocketing_time) + float(scan_time) + search_time_total_sec
         parent_summary = {
             "schema_version": "2.0",
             "mode": "reduced_aggregate",
@@ -499,6 +518,9 @@ class ExecutorBuscaPipeline:
             "fallback_to_full": False,
             "fallback_reason": None,
             "executed_mode": "reduced",
+            "pocketing_time_sec": float(pocketing_time),
+            "scan_time_sec": float(scan_time),
+            "search_time_total_sec": search_time_total_sec,
             "total_runtime_sec": total_runtime_sec,
             "total_n_eval": total_n_eval,
             "total_eval_budget_requested": total_eval_budget_requested,
@@ -507,6 +529,7 @@ class ExecutorBuscaPipeline:
             "budget_rounding_applied": budget_rounding_applied,
             "n_pockets_total": total_pockets,
             "n_pockets_used": len(feasible_pockets),
+            "selected_pre_filter_pockets": [str(p.id) for p in selected_pockets],
             "selected_pockets": [str(p.id) for _, p in feasible_pockets],
             "best_pocket_id": best_pocket_id,
             "best_over_pockets_cheap": None if best_result is None else best_result.best_pose.score_cheap,
@@ -519,6 +542,10 @@ class ExecutorBuscaPipeline:
         with open(os.path.join(out_dir, "result.json"), "w", encoding="utf-8") as handle:
             handle.write(json.dumps(parent_summary, indent=2))
         with open(os.path.join(out_dir, "metrics.jsonl"), "w", encoding="utf-8") as handle:
+            handle.write(json.dumps({"name": "runtime.pocketing_time_sec", "value": float(pocketing_time)}) + "\n")
+            handle.write(json.dumps({"name": "runtime.scan_time_sec", "value": float(scan_time)}) + "\n")
+            handle.write(json.dumps({"name": "runtime.search_time_total_sec", "value": search_time_total_sec}) + "\n")
+            handle.write(json.dumps({"name": "runtime.total_runtime_sec", "value": total_runtime_sec}) + "\n")
             for item in per_pocket_results:
                 handle.write(json.dumps({"name": "pocket.best_score_cheap", "pocket_id": item["pocket_id"], "value": item["best_score_cheap"]}) + "\n")
                 handle.write(json.dumps({"name": "pocket.n_eval_total", "pocket_id": item["pocket_id"], "value": item["n_eval_total"]}) + "\n")
@@ -544,6 +571,7 @@ class ExecutorBuscaPipeline:
                 "best_pocket_id": best_pocket_id,
                 "n_pockets_total": total_pockets,
                 "n_pockets_used": len(feasible_pockets),
+                "selected_pre_filter_pockets": [str(p.id) for p in selected_pockets],
                 "total_eval_budget_requested": total_eval_budget_requested,
                 "total_eval_budget_assigned": total_eval_budget_assigned,
                 "budget_delta": budget_delta,

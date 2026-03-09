@@ -28,8 +28,8 @@ class ConfigPage(BasePage):
         st.write("As alterações abaixo são aplicadas apenas na execução atual (em memória).")
 
         st.session_state.setdefault(StateKeys.OVERRIDE_SEED, config_data.get("seed", 7))
-        st.session_state.setdefault(StateKeys.OVERRIDE_GENERATIONS, config_data.get("generations", 5))
-        st.session_state.setdefault(StateKeys.OVERRIDE_POP_SIZE, config_data.get("pop_size", 20))
+        st.session_state.setdefault(StateKeys.OVERRIDE_GENERATIONS, config_data.get("generations", 100))
+        st.session_state.setdefault(StateKeys.OVERRIDE_POP_SIZE, config_data.get("pop_size", 100))
         st.session_state.setdefault(StateKeys.OVERRIDE_TOPK, config_data.get("topk", 5))
         st.session_state.setdefault(StateKeys.OVERRIDE_FULL_SEARCH, config_data.get("full_search", True))
 

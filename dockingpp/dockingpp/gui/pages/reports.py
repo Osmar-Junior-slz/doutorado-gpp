@@ -162,7 +162,7 @@ class ReportsPage(BasePage):
                 "Campo": "total_s",
                 "Valor": self._summary_value(
                     summary_data,
-                    ["total_s", "elapsed_s", "elapsed_seconds", "elapsed"],
+                    ["total_runtime_sec", "runtime_sec", "total_s", "elapsed_s", "elapsed_seconds", "elapsed"],
                 ),
             },
             {
@@ -241,7 +241,7 @@ class ReportsPage(BasePage):
         if runtime is None:
             runtime = ReportsPage._summary_value(
                 summary,
-                ["total_s", "elapsed_s", "elapsed_seconds", "elapsed"],
+                ["total_runtime_sec", "runtime_sec", "total_s", "elapsed_s", "elapsed_seconds", "elapsed"],
             )
         if best_cheap is None:
             best_cheap = ReportsPage._summary_value(summary, ["best_score_cheap", "best_score", "best"])
@@ -373,6 +373,194 @@ class ReportsPage(BasePage):
         records = load_jsonl(metrics_path) if metrics_path.exists() else None
         return records, ts_records
 
+    @staticmethod
+    def _to_float(value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _to_int(value: Any) -> int | None:
+        parsed = ReportsPage._to_float(value)
+        if parsed is None:
+            return None
+        return int(parsed)
+
+    @staticmethod
+    def _build_pocket_rank_map(summary_reduced: dict[str, Any]) -> dict[str, int]:
+        selected = summary_reduced.get("selected_pockets")
+        if not isinstance(selected, list):
+            return {}
+        return {str(pocket_id): idx + 1 for idx, pocket_id in enumerate(selected)}
+
+    def _normalize_reduced_pocket_rows(
+        self,
+        raw_rows: list[dict[str, Any]],
+        rank_map: dict[str, int] | None = None,
+    ) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        rank_map = rank_map or {}
+        for idx, raw in enumerate(raw_rows):
+            if not isinstance(raw, dict):
+                continue
+            pocket_id_value = self._summary_value(
+                raw,
+                ["pocket_id", "best_pose_pocket_id", "best_pocket_id", "pocket", "id", "pocket_index"],
+            )
+            if pocket_id_value is None:
+                continue
+            pocket_id = str(pocket_id_value)
+
+            pocket_rank_raw = self._summary_value(raw, ["pocket_rank", "rank"])
+            pocket_rank = self._to_int(pocket_rank_raw)
+            if pocket_rank is None:
+                pocket_index = self._to_int(raw.get("pocket_index"))
+                if pocket_index is not None:
+                    pocket_rank = pocket_index + 1
+            if pocket_rank is None and pocket_id in rank_map:
+                pocket_rank = rank_map[pocket_id]
+            if pocket_rank is None:
+                pocket_rank = idx + 1
+
+            best_score_cheap_raw = self._summary_value(raw, ["best_score_cheap", "best_score", "best_cheap", "best"])
+            best_score_expensive_raw = self._summary_value(raw, ["best_score_expensive", "best_expensive"])
+            runtime_raw = self._summary_value(
+                raw,
+                ["runtime_sec", "runtime_total_s", "total_runtime_sec", "total_s", "elapsed_s", "elapsed_seconds", "elapsed"],
+            )
+            n_eval_raw = self._summary_value(raw, ["n_eval_total", "n_eval", "evals", "evaluations"])
+            search_time_raw = self._summary_value(raw, ["search_time_sec"])
+
+            n_eval_total = self._to_int(n_eval_raw)
+            normalized.append(
+                {
+                    "pocket_id": pocket_id,
+                    "pocket_rank": pocket_rank,
+                    "best_score_cheap": self._to_float(best_score_cheap_raw),
+                    "best_score_expensive": self._to_float(best_score_expensive_raw),
+                    "runtime_sec": self._to_float(runtime_raw),
+                    "n_eval": n_eval_total,
+                    "n_eval_total": n_eval_total,
+                    "search_time_sec": self._to_float(search_time_raw),
+                }
+            )
+        normalized.sort(key=lambda item: (item.get("pocket_rank") is None, item.get("pocket_rank"), item.get("pocket_id")))
+        return normalized
+
+    @staticmethod
+    def _has_pocket_detail(rows: list[dict[str, Any]]) -> bool:
+        for row in rows:
+            if row.get("pocket_id") is None:
+                continue
+            if any(row.get(key) is not None for key in ("best_score_cheap", "best_score_expensive", "runtime_sec", "n_eval_total", "n_eval")):
+                return True
+        return False
+
+    def _load_reduced_pocket_rows_from_subdirs(
+        self,
+        reduced_run_dir: Path | None,
+        rank_map: dict[str, int] | None = None,
+    ) -> list[dict[str, Any]]:
+        if reduced_run_dir is None or not reduced_run_dir.exists():
+            return []
+        rank_map = rank_map or {}
+        rows: list[dict[str, Any]] = []
+        for child in sorted(reduced_run_dir.iterdir()):
+            if not child.is_dir():
+                continue
+            summary_payload = self._load_run_payload(child / "summary.json")
+            result_payload = self._load_run_payload(child / "result.json")
+            merged = self._merge_summary_result(summary_payload, result_payload)
+            if not merged:
+                continue
+            mode = str(merged.get("mode") or "").lower()
+            search_mode = str(merged.get("search_space_mode") or "").lower()
+            if mode and mode != "single":
+                continue
+            if search_mode and search_mode not in {"reduced", "pockets"}:
+                continue
+            pocket_id = self._summary_value(merged, ["pocket_id", "best_pose_pocket_id", "best_pocket_id"])
+            if pocket_id is None:
+                pocket_id = child.name
+            merged["pocket_id"] = str(pocket_id)
+            if rank_map.get(str(pocket_id)) is not None:
+                merged["pocket_rank"] = rank_map[str(pocket_id)]
+            rows.append(merged)
+        return self._normalize_reduced_pocket_rows(rows, rank_map)
+
+    def _resolve_reduced_pocket_rows_for_compare(
+        self,
+        summary_reduced: dict[str, Any],
+        reduced_run_dir: Path | None,
+    ) -> tuple[list[dict[str, Any]], str]:
+        rank_map = self._build_pocket_rank_map(summary_reduced)
+        per_pocket_summary = summary_reduced.get("per_pocket_results")
+        if isinstance(per_pocket_summary, list):
+            rows_from_summary = self._normalize_reduced_pocket_rows(per_pocket_summary, rank_map)
+            if self._has_pocket_detail(rows_from_summary):
+                return rows_from_summary, "summary"
+
+        if bool(summary_reduced.get("fallback_to_full")) and self._to_int(summary_reduced.get("n_pockets_used")) in (None, 0):
+            return [], "fallback_full"
+
+        rows_from_subdirs = self._load_reduced_pocket_rows_from_subdirs(reduced_run_dir, rank_map)
+        if self._has_pocket_detail(rows_from_subdirs):
+            return rows_from_subdirs, "subdirs"
+        return [], "none"
+
+    def _render_compare_reduced_pockets(
+        self,
+        summary_reduced: dict[str, Any],
+        temp_dir: Path,
+        reduced_run_dir: Path | None,
+    ) -> None:
+        st.subheader("Detalhes por bolsão no modo Reduzido")
+        st.caption("A compara\u00e7\u00e3o acima \u00e9 agregada; abaixo est\u00e3o os resultados individuais por bols\u00e3o.")
+
+        rows, source = self._resolve_reduced_pocket_rows_for_compare(summary_reduced, reduced_run_dir)
+        if not rows:
+            if source == "fallback_full":
+                st.info("Sem bolsões viáveis para detalhar (fallback para full).")
+            else:
+                st.info("Sem dados por bols\u00e3o no summary agregado e sem subpastas v\u00e1lidas no run reduced.")
+            return
+
+        frame = pd.DataFrame(rows)
+        preferred_cols = [
+            "pocket_id",
+            "pocket_rank",
+            "best_score_cheap",
+            "best_score_expensive",
+            "runtime_sec",
+            "n_eval",
+        ]
+        visible_cols = [col for col in preferred_cols if col in frame.columns]
+        if visible_cols:
+            st.dataframe(frame[visible_cols], use_container_width=True)
+        else:
+            st.dataframe(frame, use_container_width=True)
+
+        if source == "summary":
+            st.caption("Fonte dos bols\u00f5es: summary_reduced.per_pocket_results")
+        elif source == "subdirs":
+            st.caption("Fonte dos bols\u00f5es: subpastas do run reduced (fallback de leitura)")
+
+        pocket_plot_payload = {
+            "mode": "reduced_aggregate",
+            "best_pocket_id": summary_reduced.get("best_pocket_id"),
+            "per_pocket_results": rows,
+        }
+        pocket_png = temp_dir / "pocket_rank_effect_reduced_compare.png"
+        if plot_pocket_rank_effect(pocket_plot_payload, pocket_png) is None and pocket_png.exists():
+            self._render_png(pocket_png, "Efeito por bols\u00e3o (Reduced)")
+        elif pocket_png.exists():
+            self._render_png(pocket_png, "Efeito por bols\u00e3o (Reduced)")
+        else:
+            st.info("Sem dados suficientes para gr\u00e1fico por bols\u00e3o no Reduced.")
+
 
     def _render_kpis(self, summary_data: dict[str, Any], series: dict[str, Any] | None, key_suffix: str) -> None:
         st.subheader("Resumo do Gap")
@@ -475,6 +663,7 @@ class ReportsPage(BasePage):
         metrics_full_timeseries: list[dict[str, Any]] | None = None,
         metrics_reduced_timeseries: list[dict[str, Any]] | None = None,
         key_suffix: str = "compare",
+        reduced_run_dir: Path | None = None,
     ) -> None:
         """Renderiza relatório comparativo entre modos completo e reduzido."""
 
@@ -566,6 +755,8 @@ class ReportsPage(BasePage):
             self._render_png(paired_png, "Comparação pareada: speedup_runtime, speedup_eval, delta_score_cheap")
         elif paired_rows:
             st.info("Dados pareados insuficientes para plot.")
+
+        self._render_compare_reduced_pockets(summary_reduced, temp_dir, reduced_run_dir)
 
     @staticmethod
     def _load_run_payload(path: Path | None) -> dict[str, Any]:
@@ -675,6 +866,7 @@ class ReportsPage(BasePage):
                 summary_reduced,
                 metrics_full_timeseries,
                 metrics_reduced_timeseries,
+                reduced_run_dir=selected_reduced.run_dir,
             )
             return
 

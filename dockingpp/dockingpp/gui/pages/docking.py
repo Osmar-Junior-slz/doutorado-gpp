@@ -115,6 +115,33 @@ def validate_out_dir(out_dir: str) -> tuple[bool, Path | None, str | None]:
     return True, out_path, None
 
 
+def _search_space_mode_from_label(search_space_label: str) -> str:
+    """Mapeia rotulo da UI para modo canonico de busca."""
+
+    return "reduced" if search_space_label == "Bols\u00f5es" else "full"
+
+
+def _build_compare_runs(out_path: Path, top_pockets: int) -> list[dict[str, Any]]:
+    """Monta os dois runs do modo comparar usando modos canonicos."""
+
+    return [
+        {
+            "label": "full",
+            "out_dir": out_path / "full",
+            "full_search": True,
+            "top_pockets": None,
+            "search_space_mode": "full",
+        },
+        {
+            "label": "reduced",
+            "out_dir": out_path / "reduced",
+            "full_search": False,
+            "top_pockets": int(top_pockets),
+            "search_space_mode": "reduced",
+        },
+    ]
+
+
 def run_pipeline_with_progress(
     cfg: Config,
     receptor_path: str,
@@ -271,7 +298,7 @@ class DockingPage(BasePage):
             index=0,
             key=StateKeys.RUN_MODE,
         )
-        search_space_mode = "global"
+        search_space_mode = "full"
         top_pockets_value = None
         if mode == "Execução única":
             search_space_label = st.selectbox(
@@ -280,7 +307,7 @@ class DockingPage(BasePage):
                 index=0,
                 key="search_space_mode_single",
             )
-            search_space_mode = "pockets" if search_space_label == "Bolsões" else "global"
+            search_space_mode = _search_space_mode_from_label(search_space_label)
         if mode == "Comparar (Completo vs Reduzido)":
             top_pockets_value = st.slider(
                 "Melhores bolsões (execução reduzida)",
@@ -468,22 +495,7 @@ class DockingPage(BasePage):
                 return
 
             top_pockets = int(top_pockets_value or 1)
-            runs = [
-                {
-                    "label": "full",
-                    "out_dir": out_path / "full",
-                    "full_search": True,
-                    "top_pockets": None,
-                    "search_space_mode": "global",
-                },
-                {
-                    "label": "reduced",
-                    "out_dir": out_path / "reduced",
-                    "full_search": False,
-                    "top_pockets": top_pockets,
-                    "search_space_mode": "pockets",
-                },
-            ]
+            runs = _build_compare_runs(out_path, top_pockets)
             results: dict[str, dict[str, Any]] = {}
             resolved_configs: dict[str, dict[str, Any]] = {}
             st.write("Executando pipeline de docking (modo de comparação)...")

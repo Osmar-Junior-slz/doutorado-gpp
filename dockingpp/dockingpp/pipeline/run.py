@@ -356,6 +356,7 @@ def _execute_single_run(
     selected_pocket_ids: list[str],
     tracer: AuditTracer | None = None,
     pocket_id: str | None = None,
+    include_global_overhead: bool = True,
 ):
     """Wrapper compatível para execução única delegada ao módulo de execução.
 
@@ -386,6 +387,7 @@ def _execute_single_run(
             selected_pocket_ids=selected_pocket_ids,
             tracer=tracer,
             pocket_id=pocket_id,
+            include_global_overhead=include_global_overhead,
         ),
     )
 
